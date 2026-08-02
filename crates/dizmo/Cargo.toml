@@ -1,0 +1,10 @@
+[package]
+name = "dizmo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nice-plug = { version = "0.2.3", features = ["standalone"] }
+
+[lib]
+crate-type = ["cdylib", "lib"]
