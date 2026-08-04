@@ -1,9 +1,20 @@
+use crate::state::OutputMode;
 use nice_plug::prelude::*;
+use nice_plug_egui::EguiState;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
-use vizia_plug::ViziaState;
 
 /// The number of possible channel strips / outputs.
 pub const NUM_CHANNELS: usize = 16;
+
+/// The per-channel audio output ports for the MULTI output layout.
+pub const AUX_OUTPUT_PORTS: [NonZeroU32; NUM_CHANNELS] = [new_nonzero_u32(1); NUM_CHANNELS];
+
+/// Names for the per-channel audio output ports.
+pub static AUX_OUTPUT_NAMES: [&str; NUM_CHANNELS] = [
+    "Ch 1", "Ch 2", "Ch 3", "Ch 4", "Ch 5", "Ch 6", "Ch 7", "Ch 8", "Ch 9", "Ch 10", "Ch 11",
+    "Ch 12", "Ch 13", "Ch 14", "Ch 15", "Ch 16",
+];
 
 /// All parameters and persistent state for the DIZMO plugin.
 #[derive(Params)]
@@ -11,11 +22,16 @@ pub struct DizmoParams {
     /// The editor state, saved together with the parameter state so the window size can be
     /// restored.
     #[persist = "editor-state"]
-    pub editor_state: Arc<ViziaState>,
+    pub editor_state: Arc<EguiState>,
 
     /// Number of visible channel strips.
     #[id = "num-strips"]
     pub num_strips: IntParam,
+
+    /// Output routing: STEREO mixes down to the MAIN bus, MULTI routes each channel to its own
+    /// output.
+    #[id = "output-mode"]
+    pub output_mode: EnumParam<OutputMode>,
 
     /// One set of parameters per channel strip.
     #[nested(array)]
@@ -56,7 +72,7 @@ pub struct ChannelParams {
 }
 
 fn default_channel_names() -> [String; NUM_CHANNELS] {
-    std::array::from_fn(|idx| format!("Channel {}", idx + 1))
+    std::array::from_fn(|idx| format!("Ch {}", idx + 1))
 }
 
 fn default_chokers() -> ChokeMatrix {
@@ -99,7 +115,7 @@ fn pan_param(name: &str) -> FloatParam {
 }
 
 fn note_param(name: &str) -> IntParam {
-    IntParam::new(name, 35, IntRange::Linear { min: 0, max: 127 })
+    IntParam::new(name, 26, IntRange::Linear { min: 0, max: 127 })
         .with_value_to_string(formatters::v2s_i32_note_formatter())
         .with_string_to_value(formatters::s2v_i32_note_formatter())
 }
@@ -134,8 +150,8 @@ impl Default for DizmoParams {
                     min: 1,
                     max: NUM_CHANNELS as i32,
                 },
-            )
-            .with_value_to_string(Arc::new(|value| format!("{value}"))),
+            ),
+            output_mode: EnumParam::new("Output Mode", OutputMode::Stereo),
             channels: std::array::from_fn(ChannelParams::new),
             channel_names: Arc::new(Mutex::new(default_channel_names())),
             chokers: Arc::new(Mutex::new(default_chokers())),

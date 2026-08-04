@@ -16,7 +16,6 @@ It acts as a drum sampler: a DrumGizmo kit provides a set of drum instruments (k
   - Assignable MIDI note indicator.
   - Solo and mute.
   - MIDI choke (a channel can be choked by one or more other channels).
-- Main strip for the stereo mix of all channels.
 - Stereo or Multi output modes:
   - **STEREO**: everything is mixed and routed through the MAIN output.
   - **MULTI**: MAIN is disabled and every channel outputs on its own (up to 16 outputs).
@@ -31,7 +30,7 @@ It acts as a drum sampler: a DrumGizmo kit provides a set of drum instruments (k
 
 ## Status
 
-Work in progress. See [TASKS.md](TASKS.md) for the current task list, [DESIGN.md](DESIGN.md) for the UI design, and [ARCHITECTURE.md](ARCHITECTURE.md) for the architecture.
+The mixer UI (channel strips, choke assign, STEREO/MULTI selector) is implemented. Audio processing, kit loading and MIDI playback are still work in progress. See [TASKS.md](TASKS.md) for the current task list, [DESIGN.md](DESIGN.md) for the UI design, and [ARCHITECTURE.md](ARCHITECTURE.md) for the architecture.
 
 ## Building
 

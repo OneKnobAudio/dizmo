@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 nice-plug = { version = "0.2.3", features = ["standalone"] }
+nice-plug-egui = { version = "0.3", features = ["opengl"] }
+egui = "0.35"
 
 [lib]
 crate-type = ["cdylib", "lib"]
