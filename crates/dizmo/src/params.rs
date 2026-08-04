@@ -34,15 +34,7 @@ pub struct DizmoParams {
     /// User editable channel names. Persistent, not automatable.
     #[persist = "channel-names"]
     pub channel_names: Arc<Mutex<[String; NUM_CHANNELS]>>,
-
-    /// Choke assignments. `chokers[victim][choker]` is `true` when `choker` cuts `victim`'s
-    /// voices on trigger. Persistent, not automatable.
-    #[persist = "chokers"]
-    pub chokers: Arc<Mutex<ChokeMatrix>>,
 }
-
-/// A `true` value at `[victim][choker]` means that `choker` chokes `victim`.
-pub type ChokeMatrix = [[bool; NUM_CHANNELS]; NUM_CHANNELS];
 
 #[derive(Params)]
 pub struct ChannelParams {
@@ -63,15 +55,6 @@ pub struct ChannelParams {
 
 fn default_channel_names() -> [String; NUM_CHANNELS] {
     std::array::from_fn(|idx| AUX_OUTPUT_NAMES[idx].to_string())
-}
-
-fn default_chokers() -> ChokeMatrix {
-    // Self-choke is enabled by default: a retrigger cuts the previous voice.
-    let mut chokers = [[false; NUM_CHANNELS]; NUM_CHANNELS];
-    for (victim, row) in chokers.iter_mut().enumerate() {
-        row[victim] = true;
-    }
-    chokers
 }
 
 fn fader_param(name: &str) -> FloatParam {
@@ -136,7 +119,6 @@ impl Default for DizmoParams {
             ),
             channels: std::array::from_fn(ChannelParams::new),
             channel_names: Arc::new(Mutex::new(default_channel_names())),
-            chokers: Arc::new(Mutex::new(default_chokers())),
         }
     }
 }

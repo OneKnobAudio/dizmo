@@ -4,11 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::engine::Engine;
-use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, DizmoParams, NUM_CHANNELS};
+use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, ChannelParams, DizmoParams, NUM_CHANNELS};
 
 pub mod engine;
 pub mod kit;
-mod params;
+pub mod params;
 mod ui;
 
 /// The audio-thread state shared by both plugin variants: the loaded engine and
@@ -53,21 +53,51 @@ impl AudioCore {
 }
 
 /// Sums the first `channels` kit-channel scratch buffers into the MAIN stereo
-/// pair. No per-channel gain or pan is applied yet.
+/// pair, applying per-channel gain, pan, mute, and solo.
 pub fn mixdown_to_stereo(
     scratch: &[Vec<f32>],
     channels: usize,
     frames: usize,
     left: &mut [f32],
     right: &mut [f32],
+    channel_params: &[ChannelParams; NUM_CHANNELS],
 ) {
+    // Determine if any channel is soloed
+    let any_soloed = channel_params.iter().take(channels).any(|p| p.solo.value());
+
     for sample in 0..frames {
-        let mut sum = 0.0;
-        for channel in scratch.iter().take(channels) {
-            sum += channel[sample];
+        let mut left_sum = 0.0;
+        let mut right_sum = 0.0;
+        for (channel_idx, channel_data) in scratch.iter().enumerate().take(channels) {
+            let param = &channel_params[channel_idx];
+
+            // Solo logic: if any channel is soloed, only soloed channels play
+            if any_soloed && !param.solo.value() {
+                continue;
+            }
+
+            // Mute logic: skip if muted (solo overrides mute)
+            if param.mute.value() && !param.solo.value() {
+                continue;
+            }
+
+            // Fader is stored as linear gain (not dB)
+            let gain_linear = param.fader.value();
+            let pan_pos = param.pan.value();
+
+            // Pan law: 3dB compensation
+            // pan_pos: -1 (full left) to +1 (full right)
+            // At center (0): both channels get 1.0
+            // At extremes: panned channel gets 1.0, opposite gets 0.0
+            let pan_left = (1.0 - pan_pos.max(0.0)).sqrt();
+            let pan_right = (1.0 + pan_pos.min(0.0)).sqrt();
+
+            left_sum += channel_data[sample] * gain_linear * pan_left;
+            right_sum += channel_data[sample] * gain_linear * pan_right;
         }
-        left[sample] = sum;
-        right[sample] = sum;
+
+        left[sample] = left_sum;
+        right[sample] = right_sum;
     }
 }
 
@@ -264,8 +294,17 @@ impl DizmoPlugin {
         };
 
         while let Some(event) = context.next_event() {
-            if let NoteEvent::NoteOn { note, velocity, .. } = event {
-                engine.note_on(note, (velocity * 127.0).round() as u8);
+            match event {
+                NoteEvent::NoteOn { note, velocity, .. } => {
+                    engine.note_on(note, (velocity * 127.0).round() as u8);
+                }
+                NoteEvent::NoteOff { note, velocity, .. } => {
+                    engine.note_off(note, (velocity * 127.0).round() as u8);
+                }
+                NoteEvent::MidiCC { cc: 123, .. } => {
+                    engine.all_notes_off();
+                }
+                _ => {}
             }
         }
 
@@ -285,6 +324,7 @@ impl DizmoPlugin {
             frames,
             left,
             right,
+            &self.params.channels,
         );
 
         ProcessStatus::Normal
@@ -315,8 +355,17 @@ impl DizmoMultiPlugin {
         };
 
         while let Some(event) = context.next_event() {
-            if let NoteEvent::NoteOn { note, velocity, .. } = event {
-                engine.note_on(note, (velocity * 127.0).round() as u8);
+            match event {
+                NoteEvent::NoteOn { note, velocity, .. } => {
+                    engine.note_on(note, (velocity * 127.0).round() as u8);
+                }
+                NoteEvent::NoteOff { note, velocity, .. } => {
+                    engine.note_off(note, (velocity * 127.0).round() as u8);
+                }
+                NoteEvent::MidiCC { cc: 123, .. } => {
+                    engine.all_notes_off();
+                }
+                _ => {}
             }
         }
 
@@ -326,13 +375,40 @@ impl DizmoMultiPlugin {
 
         engine.process(frames, &mut self.core.scratch);
 
+        // Determine if any channel is soloed
+        let any_soloed = self
+            .params
+            .channels
+            .iter()
+            .take(engine.kit_channels())
+            .any(|p| p.solo.value());
+
         for (index, output) in aux.outputs.iter_mut().enumerate() {
             if index >= engine.kit_channels() {
                 continue;
             }
             let source = &self.core.scratch[index][..frames];
             let destination = &mut output.as_slice()[0][..frames];
-            destination.copy_from_slice(source);
+            let param = &self.params.channels[index];
+
+            // Solo logic: if any channel is soloed, only soloed channels play
+            if any_soloed && !param.solo.value() {
+                destination.fill(0.0);
+                continue;
+            }
+
+            // Mute logic: skip if muted (solo overrides mute)
+            if param.mute.value() && !param.solo.value() {
+                destination.fill(0.0);
+                continue;
+            }
+
+            // Fader is stored as linear gain (not dB), no pan in multi mode
+            let gain_linear = param.fader.value();
+
+            for (sample_idx, sample) in source.iter().enumerate() {
+                destination[sample_idx] = sample * gain_linear;
+            }
         }
 
         ProcessStatus::Normal

@@ -112,6 +112,8 @@ fn loading_twice_replaces_the_engine() {
 
 #[test]
 fn mixdown_sums_kit_channels_into_both_stereo_sides() {
+    use dizmo::params::DizmoParams;
+
     let scratch = vec![
         vec![1.0, 2.0, 3.0],
         vec![10.0, 20.0, 30.0],
@@ -119,9 +121,11 @@ fn mixdown_sums_kit_channels_into_both_stereo_sides() {
     ];
     let mut left = vec![0.0; 3];
     let mut right = vec![0.0; 3];
+    let params = DizmoParams::default();
 
-    mixdown_to_stereo(&scratch, 2, 3, &mut left, &mut right);
+    mixdown_to_stereo(&scratch, 2, 3, &mut left, &mut right, &params.channels);
 
+    // With default params (0 dB gain, center pan), both channels should sum equally
     assert_eq!(left, vec![11.0, 22.0, 33.0]);
     assert_eq!(right, left);
 }

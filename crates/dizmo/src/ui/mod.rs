@@ -25,7 +25,6 @@ pub(crate) const TRACK_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x2c);
 pub(crate) const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf4, 0xf7);
 pub(crate) const TEXT_DIM: Color32 = Color32::from_rgb(0x8b, 0x90, 0x99);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x55, 0x84, 0xc8);
-pub(crate) const ACCENT_BORDER: Color32 = Color32::from_rgb(0x3f, 0x6f, 0xb5);
 pub(crate) const KNOB_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
 pub(crate) const INDICATOR: Color32 = Color32::from_rgb(0xe8, 0xec, 0xf1);
 pub(crate) const SOLO_ACTIVE: Color32 = Color32::from_rgb(0x9a, 0x8a, 0x3c);
@@ -42,15 +41,13 @@ pub fn default_editor_state() -> Arc<EguiState> {
     EguiState::from_size(WINDOW_SIZE)
 }
 
-/// GUI-only state that is not persisted (buffers for the editable text fields and the active
-/// choke-assign target).
+/// GUI-only state that is not persisted (buffers for the editable text fields).
 pub struct EditorState {
     pub params: Arc<DizmoParams>,
     /// Whether the pan knob is shown: the multi plugin routes each channel to its own output
     /// where pan has no effect, so it is hidden there.
     pub show_pan: bool,
     pub name_buffers: Vec<String>,
-    pub choke_assign: Option<usize>,
 }
 
 impl EditorState {
@@ -63,7 +60,6 @@ impl EditorState {
             params,
             show_pan,
             name_buffers,
-            choke_assign: None,
         }
     }
 }
@@ -230,17 +226,6 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
         state,
         pos2(rect.left() + 210.0, header.top() + 10.0),
     );
-
-    // Choke-assign mode hint
-    if let Some(victim) = state.choke_assign {
-        ui.painter().text(
-            pos2(rect.left() + 560.0, center_y),
-            Align2::LEFT_CENTER,
-            format!("CHOKE ASSIGN: channel {} · click strips to toggle chokers · double-click CHOKE to exit", victim + 1),
-            FontId::proportional(10.0),
-            ACCENT,
-        );
-    }
 }
 
 /// A compact drag value for the number of visible channel strips.

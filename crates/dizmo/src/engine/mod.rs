@@ -121,6 +121,13 @@ impl Engine {
         self.trigger(instrument_index, velocity as f32 / 127.0);
     }
 
+    /// Handles a MIDI note-off. For drum samplers, note-offs are typically
+    /// ignored (samples play to completion), but we provide this for completeness.
+    pub fn note_off(&mut self, _note: u8, _velocity: u8) {
+        // Drums typically ignore note-off and let samples ring out naturally.
+        // This is a no-op for standard drum behavior.
+    }
+
     /// Stops all ringing voices immediately (panic / all-notes-off).
     pub fn all_notes_off(&mut self) {
         self.voices.clear();

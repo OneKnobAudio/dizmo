@@ -14,7 +14,7 @@ It acts as a drum sampler: a DrumGizmo kit provides a set of drum instruments (k
   - Pan control for the stereo MAIN mix (stereo plugin only).
   - Fixed channel number indicator.
   - Solo and mute.
-  - MIDI choke (a channel can be choked by one or more other channels).
+  - MIDI choke (defined by the DrumGizmo kit XML).
 - Two plugin variants sharing the same channel strips:
   - **DIZMO** (stereo): everything is mixed and routed through the MAIN output.
   - **DIZMO Multi**: every channel outputs on its own (up to 16 outputs).
@@ -29,7 +29,7 @@ It acts as a drum sampler: a DrumGizmo kit provides a set of drum instruments (k
 
 ## Status
 
-The mixer UI (channel strips, choke assign) and DrumGizmo kit parsing (drumkit.xml, instrument.xml, midimap.xml) are implemented and covered by unit tests. Audio processing and MIDI playback are still work in progress. The standalone app runs the stereo plugin. See [TASKS.md](TASKS.md) for the current task list, [DESIGN.md](DESIGN.md) for the UI design, and [ARCHITECTURE.md](ARCHITECTURE.md) for the architecture.
+The core features are implemented: DrumGizmo kit parsing (drumkit.xml, instrument.xml, midimap.xml), sample loading with resampling, velocity layer selection, choke handling, MIDI playback (note-on, note-off, all-notes-off), per-channel parameters (fader gain, pan with 3dB law, mute, solo), and the mixer UI (channel strips, choke assign). The standalone app runs the stereo plugin. See [TASKS.md](TASKS.md) for remaining work, [DESIGN.md](DESIGN.md) for the UI design, and [ARCHITECTURE.md](ARCHITECTURE.md) for the architecture.
 
 ## Building
 
