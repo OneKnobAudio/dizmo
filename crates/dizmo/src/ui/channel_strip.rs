@@ -1,5 +1,4 @@
 use crate::params::{DizmoParams, NUM_CHANNELS};
-use crate::state::OutputMode;
 use crate::ui::fader::show_fader;
 use crate::ui::knob::{KNOB_RADIUS, show_knob};
 use crate::ui::{
@@ -161,37 +160,34 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         Stroke::new(1.0, CARD_BORDER),
     );
 
-    // --- Pan knob with L/R labels ---
-    // Pan only has an effect in STEREO mode (ARCHITECTURE.md routing rules).
-    let pan_enabled = params.output_mode.value() == OutputMode::Stereo;
-    let knob_center = pos2(center_x, separator_y + 26.0);
-    let knob_rect = Rect::from_center_size(knob_center, vec2(KNOB_RADIUS * 3.0, KNOB_RADIUS * 3.0));
-    show_knob(
-        ui,
-        setter,
-        &params.channels[index].pan,
-        index,
-        pan_enabled,
-        knob_rect,
-    );
-    ui.painter().text(
-        pos2(inner.left() + 4.0, knob_center.y),
-        Align2::LEFT_CENTER,
-        "L",
-        FontId::proportional(9.0),
-        TEXT_DIM,
-    );
-    ui.painter().text(
-        pos2(inner.right() - 4.0, knob_center.y),
-        Align2::RIGHT_CENTER,
-        "R",
-        FontId::proportional(9.0),
-        TEXT_DIM,
-    );
+    // --- Pan knob with L/R labels (stereo plugin only) ---
+    let fader_top = if state.show_pan {
+        let knob_center = pos2(center_x, separator_y + 26.0);
+        let knob_rect =
+            Rect::from_center_size(knob_center, vec2(KNOB_RADIUS * 3.0, KNOB_RADIUS * 3.0));
+        show_knob(ui, setter, &params.channels[index].pan, index, knob_rect);
+        ui.painter().text(
+            pos2(inner.left() + 4.0, knob_center.y),
+            Align2::LEFT_CENTER,
+            "L",
+            FontId::proportional(9.0),
+            TEXT_DIM,
+        );
+        ui.painter().text(
+            pos2(inner.right() - 4.0, knob_center.y),
+            Align2::RIGHT_CENTER,
+            "R",
+            FontId::proportional(9.0),
+            TEXT_DIM,
+        );
+        knob_rect.bottom() + 8.0
+    } else {
+        separator_y + 8.0
+    };
 
     // --- Vertical fader ---
     let fader_rect = Rect::from_min_max(
-        pos2(inner.left(), knob_rect.bottom() + 8.0),
+        pos2(inner.left(), fader_top),
         pos2(inner.right(), inner.bottom()),
     );
     show_fader(ui, setter, &params.channels[index].fader, index, fader_rect);

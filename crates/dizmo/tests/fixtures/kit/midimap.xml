@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<midimap>
+  <map note="35" instr="Kick"/>
+  <map note="38" instr="Snare"/>
+  <map note="42" instr="HihatClosed"/>
+  <map note="46" instr="HihatOpen"/>
+</midimap>

@@ -1,4 +1,3 @@
-use crate::state::OutputMode;
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
 use std::num::NonZeroU32;
@@ -27,11 +26,6 @@ pub struct DizmoParams {
     /// Number of visible channel strips.
     #[id = "num-strips"]
     pub num_strips: IntParam,
-
-    /// Output routing: STEREO mixes down to the MAIN bus, MULTI routes each channel to its own
-    /// output.
-    #[id = "output-mode"]
-    pub output_mode: EnumParam<OutputMode>,
 
     /// One set of parameters per channel strip.
     #[nested(array)]
@@ -72,7 +66,7 @@ pub struct ChannelParams {
 }
 
 fn default_channel_names() -> [String; NUM_CHANNELS] {
-    std::array::from_fn(|idx| format!("Ch {}", idx + 1))
+    std::array::from_fn(|idx| AUX_OUTPUT_NAMES[idx].to_string())
 }
 
 fn default_chokers() -> ChokeMatrix {
@@ -151,7 +145,6 @@ impl Default for DizmoParams {
                     max: NUM_CHANNELS as i32,
                 },
             ),
-            output_mode: EnumParam::new("Output Mode", OutputMode::Stereo),
             channels: std::array::from_fn(ChannelParams::new),
             channel_names: Arc::new(Mutex::new(default_channel_names())),
             chokers: Arc::new(Mutex::new(default_chokers())),

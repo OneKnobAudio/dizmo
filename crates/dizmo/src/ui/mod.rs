@@ -1,7 +1,6 @@
 //! The egui-based editor for DIZMO, matching `assets/MOCKUP.svg`.
 
 use crate::params::{DizmoParams, NUM_CHANNELS};
-use crate::state::OutputMode;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::formatters;
@@ -50,13 +49,16 @@ pub fn default_editor_state() -> Arc<EguiState> {
 /// choke-assign target).
 pub struct EditorState {
     pub params: Arc<DizmoParams>,
+    /// Whether the pan knob is shown: the multi plugin routes each channel to its own output
+    /// where pan has no effect, so it is hidden there.
+    pub show_pan: bool,
     pub name_buffers: Vec<String>,
     pub note_buffers: Vec<String>,
     pub choke_assign: Option<usize>,
 }
 
 impl EditorState {
-    pub fn new(params: Arc<DizmoParams>) -> Self {
+    pub fn new(params: Arc<DizmoParams>, show_pan: bool) -> Self {
         let name_buffers = {
             let names = params.channel_names.lock().unwrap();
             names.to_vec()
@@ -68,6 +70,7 @@ impl EditorState {
             .collect();
         Self {
             params,
+            show_pan,
             name_buffers,
             note_buffers,
             choke_assign: None,
@@ -81,9 +84,9 @@ pub struct DizmoEditor {
 }
 
 impl DizmoEditor {
-    pub fn new(params: Arc<DizmoParams>) -> Self {
+    pub fn new(params: Arc<DizmoParams>, show_pan: bool) -> Self {
         let egui_state = params.editor_state.clone();
-        let editor_state = EditorState::new(params);
+        let editor_state = EditorState::new(params, show_pan);
 
         let inner = create_egui_editor(
             egui_state,
@@ -104,7 +107,7 @@ impl DizmoEditor {
 
 impl Default for DizmoEditor {
     fn default() -> Self {
-        Self::new(Arc::new(DizmoParams::default()))
+        Self::new(Arc::new(DizmoParams::default()), true)
     }
 }
 
@@ -220,17 +223,10 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
         TEXT_DIM,
     );
 
-    // STEREO / MULTI output mode selector
-    let mode_rect = Rect::from_min_size(
-        pos2(rect.left() + 196.0, header.top() + 10.0),
-        vec2(150.0, 22.0),
-    );
-    draw_mode_selector(ui, setter, state, mode_rect);
-
     // Separator
     ui.painter().rect_filled(
         Rect::from_min_size(
-            pos2(rect.left() + 362.0, header.top() + 7.0),
+            pos2(rect.left() + 196.0, header.top() + 7.0),
             vec2(6.0, 28.0),
         ),
         3.0,
@@ -242,7 +238,7 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
         ui,
         setter,
         state,
-        pos2(rect.left() + 376.0, header.top() + 10.0),
+        pos2(rect.left() + 210.0, header.top() + 10.0),
     );
 
     // Choke-assign mode hint
@@ -257,62 +253,10 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
     }
 }
 
-/// The STEREO / MULTI output mode selector.
-fn draw_mode_selector(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect: Rect) {
-    let options = OutputMode::variants();
-    let active = state.params.output_mode.value();
-    let active_index = OutputMode::to_index(active);
-
-    let segment_width = rect.width() / options.len() as f32;
-    for (index, label) in options.iter().enumerate() {
-        let segment = Rect::from_min_size(
-            pos2(rect.left() + index as f32 * segment_width, rect.top()),
-            vec2(segment_width, rect.height()),
-        );
-        let is_active = index == active_index;
-        let response = ui.interact(segment, ui.id().with(("dizmo-mode", index)), Sense::click());
-
-        if is_active {
-            ui.painter().rect_filled(segment, 11.0, ACCENT);
-        }
-        ui.painter().text(
-            segment.center(),
-            Align2::CENTER_CENTER,
-            label,
-            FontId::proportional(9.0),
-            if is_active { Color32::WHITE } else { TEXT_DIM },
-        );
-
-        if index + 1 < options.len() {
-            ui.painter().line_segment(
-                [
-                    pos2(segment.right(), segment.top() + 4.0),
-                    pos2(segment.right(), segment.bottom() - 4.0),
-                ],
-                Stroke::new(1.0, HEADER_BORDER),
-            );
-        }
-
-        if response.clicked() && !is_active {
-            setter.begin_set_parameter(&state.params.output_mode);
-            setter.set_parameter(&state.params.output_mode, OutputMode::from_index(index));
-            setter.end_set_parameter(&state.params.output_mode);
-        }
-    }
-
-    ui.painter().rect_stroke(
-        rect,
-        11.0,
-        Stroke::new(1.0, KNOB_BORDER),
-        StrokeKind::Inside,
-    );
-}
-
 /// A compact drag value for the number of visible channel strips.
 fn draw_strips_count(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, origin: Pos2) {
-    let label_pos = origin;
     ui.painter().text(
-        label_pos,
+        origin,
         Align2::LEFT_CENTER,
         "STRIPS",
         FontId::proportional(9.0),

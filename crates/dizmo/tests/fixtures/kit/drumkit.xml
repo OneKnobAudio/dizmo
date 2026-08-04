@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<drumkit samplerate="48000" version="2.1.0">
+  <metadata>
+    <version>1.2.3</version>
+    <title>Test Kit</title>
+    <description>Fixture kit for tests</description>
+    <license>Creative Commons</license>
+    <defaultmidimap src="midimap.xml"/>
+  </metadata>
+  <channels>
+    <channel name="AmbL"/>
+    <channel name="AmbR"/>
+    <channel name="Kick"/>
+    <channel name="Snare"/>
+    <channel name="Hihat"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+      <channelmap in="AmbL" out="AmbL" main="true"/>
+      <channelmap in="AmbR" out="AmbR" main="true"/>
+    </instrument>
+    <instrument name="Snare" file="inst_snare.xml">
+      <channelmap in="Snare" out="Snare" main="true"/>
+    </instrument>
+    <instrument name="HihatClosed" group="hihat" file="inst_hihat_closed.xml">
+      <chokes>
+        <choke instrument="HihatOpen" choketime="100"/>
+      </chokes>
+      <channelmap in="Hihat" out="Hihat" main="true"/>
+    </instrument>
+    <instrument name="HihatOpen" group="hihat" file="inst_hihat_open.xml">
+      <channelmap in="Hihat" out="Hihat" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>

@@ -1,5 +1,5 @@
 use crate::ui::{ACCENT, CARD_BG, INDICATOR, KNOB_BORDER, TEXT, TEXT_DIM, TRACK_BG};
-use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use nice_plug::prelude::*;
 
 /// The fader range in dB above and below unity.
@@ -115,6 +115,6 @@ pub fn show_fader(
             pos2(track.left() - 2.0, zero_y),
             pos2(track.right() + 2.0, zero_y),
         ],
-        Stroke::new(1.0, Color32::from_rgb(0x55, 0x84, 0xc8)),
+        Stroke::new(1.0, ACCENT),
     );
 }

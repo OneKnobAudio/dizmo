@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instrument version="2.0" name="Snare">
+  <channels>
+    <channel name="Snare" main="true"/>
+  </channels>
+  <samples>
+    <sample name="Snare-1" power="0.02" normalized="true">
+      <audiofile channel="Snare" file="samples/snare1.wav" filechannel="1"/>
+    </sample>
+    <sample name="Snare-2" power="0.08">
+      <audiofile channel="Snare" file="samples/snare2.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>

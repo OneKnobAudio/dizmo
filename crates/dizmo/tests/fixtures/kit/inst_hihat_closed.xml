@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instrument version="1.0" name="HihatClosed">
+  <description>Closed hihat</description>
+  <channels>
+    <channel name="Hihat" main="true"/>
+  </channels>
+  <samples>
+    <sample name="HC-1">
+      <audiofile channel="Hihat" file="samples/hc1.wav" filechannel="1"/>
+    </sample>
+    <sample name="HC-2">
+      <audiofile channel="Hihat" file="samples/hc2.wav" filechannel="1"/>
+    </sample>
+  </samples>
+  <velocities>
+    <velocity lower="0.0" upper="0.5">
+      <sampleref probability="0.8" name="HC-1"/>
+      <sampleref probability="0.2" name="HC-2"/>
+    </velocity>
+    <velocity lower="0.5" upper="1.0">
+      <sampleref probability="1.0" name="HC-2"/>
+    </velocity>
+  </velocities>
+</instrument>
