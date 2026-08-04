@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 pub mod drumkit;
 pub mod instrument;
 pub mod midimap;
+pub mod samples;
 
 mod xml;
 
@@ -27,6 +28,7 @@ pub use instrument::{
     AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
 };
 pub use midimap::{MidiMap, MidiMapEntry};
+pub use samples::{DecodedFile, SampleBank, SampleError, load_samples};
 
 /// The default sample rate used when a `drumkit.xml` does not declare one.
 pub const DEFAULT_SAMPLERATE: f64 = 44100.0;

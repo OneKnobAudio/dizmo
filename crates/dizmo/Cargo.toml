@@ -9,6 +9,7 @@ nice-plug-egui = { version = "0.3", features = ["opengl"] }
 egui = "0.35"
 roxmltree = "0.20"
 thiserror = "2"
+hound = "3.5"
 
 [lib]
 crate-type = ["cdylib", "lib"]

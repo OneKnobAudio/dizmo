@@ -730,6 +730,7 @@ name = "dizmo"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "hound",
  "nice-plug",
  "nice-plug-egui",
  "roxmltree",
@@ -1100,6 +1101,12 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "indexmap"

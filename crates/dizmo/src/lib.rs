@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, DizmoParams};
 
+pub mod engine;
 pub mod kit;
 mod params;
 mod ui;
