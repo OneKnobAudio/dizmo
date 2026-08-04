@@ -6,7 +6,7 @@ use super::KitError;
 use super::xml::{load_document, parse_note, read_file, required_attr};
 
 /// A parsed `midimap.xml`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct MidiMap {
     pub entries: Vec<MidiMapEntry>,
 }

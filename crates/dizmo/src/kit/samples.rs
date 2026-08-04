@@ -59,9 +59,13 @@ impl SampleBank {
 
 /// Decodes and caches every sample referenced by `kit`.
 ///
+/// When `target_sample_rate` is set and differs from a file's own sample rate,
+/// every channel is resampled to that rate so the engine can play back at the
+/// host rate 1:1.
+///
 /// Returns the first error encountered (missing file, malformed WAV, or a
 /// `filechannel` outside the file's channel count).
-pub fn load_samples(kit: &Kit) -> Result<SampleBank, SampleError> {
+pub fn load_samples(kit: &Kit, target_sample_rate: Option<u32>) -> Result<SampleBank, SampleError> {
     let mut files = HashMap::new();
 
     for instrument in &kit.instruments {
@@ -72,7 +76,7 @@ pub fn load_samples(kit: &Kit) -> Result<SampleBank, SampleError> {
                     continue;
                 }
 
-                let decoded = decode_file(&path)?;
+                let decoded = decode_file(&path, target_sample_rate)?;
                 if audio.file_channel >= decoded.channels.len() {
                     return Err(SampleError::ChannelOutOfRange {
                         sample: sample.name.clone(),
@@ -89,7 +93,7 @@ pub fn load_samples(kit: &Kit) -> Result<SampleBank, SampleError> {
     Ok(SampleBank { files })
 }
 
-fn decode_file(path: &Path) -> Result<DecodedFile, SampleError> {
+fn decode_file(path: &Path, target_sample_rate: Option<u32>) -> Result<DecodedFile, SampleError> {
     let mut reader = hound::WavReader::open(path).map_err(|error| match error {
         hound::Error::IoError(source) => SampleError::Io {
             path: path.to_path_buf(),
@@ -128,10 +132,67 @@ fn decode_file(path: &Path) -> Result<DecodedFile, SampleError> {
         }
     }
 
+    let sample_rate = match target_sample_rate {
+        Some(target) if target != spec.sample_rate => {
+            for channel in channels.iter_mut() {
+                *channel = resample(channel, spec.sample_rate, target);
+            }
+            target
+        }
+        _ => spec.sample_rate,
+    };
+
     Ok(DecodedFile {
-        sample_rate: spec.sample_rate,
+        sample_rate,
         channels: channels.into_iter().map(Into::into).collect(),
     })
+}
+
+/// Resamples `data` from `src_rate` to `dst_rate` using a Lanczos-3
+/// windowed-sinc kernel. Downsampling is anti-aliased by scaling the kernel by
+/// the ratio. The result is normalized by the summed kernel weights so signals
+/// keep their amplitude at the buffer edges.
+fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+    const RADIUS: f64 = 3.0;
+    let ratio = src_rate as f64 / dst_rate as f64;
+    let scale = ratio.max(1.0);
+    let support = (RADIUS / scale).ceil() as i64;
+    let out_len = (data.len() as f64 / ratio).ceil() as usize;
+
+    let mut out = Vec::with_capacity(out_len);
+    for j in 0..out_len {
+        let pos = j as f64 * ratio;
+        let center = pos.floor() as i64;
+        let mut sum = 0.0;
+        let mut weight_sum = 0.0;
+        for k in (center - support)..=(center + support) {
+            if k < 0 || k as usize >= data.len() {
+                continue;
+            }
+            let x = (pos - k as f64) * scale;
+            let weight = lanczos(x, RADIUS);
+            sum += data[k as usize] as f64 * weight;
+            weight_sum += weight;
+        }
+        out.push(if weight_sum.abs() > 0.0 {
+            (sum / weight_sum) as f32
+        } else {
+            0.0
+        });
+    }
+    out
+}
+
+/// The Lanczos kernel: `sinc(x) * sinc(x / radius)`, zero outside `radius`.
+fn lanczos(x: f64, radius: f64) -> f64 {
+    if x.abs() < 1e-9 {
+        return 1.0;
+    }
+    if x.abs() >= radius {
+        return 0.0;
+    }
+    let p = std::f64::consts::PI * x;
+    radius * p.sin() * (p / radius).sin() / (p * p)
 }
 
 /// Errors that can occur while loading and decoding samples.

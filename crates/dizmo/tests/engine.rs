@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dizmo::engine::Engine;
+use dizmo::engine::{Engine, load_engine};
 use dizmo::kit::{Kit, MidiMap, SampleBank, load_samples};
 
 const DRUMKIT: &str = r#"<drumkit version="2.0">
@@ -95,15 +95,14 @@ fn setup(tag: &str, drumkit: &str, xml: &[(&str, &str)], wavs: &[(&str, u16, &[i
 
 fn load(dir: &Path) -> (Arc<Kit>, Arc<SampleBank>, MidiMap) {
     let kit = Arc::new(Kit::load(dir.join("drumkit.xml")).unwrap());
-    let bank = Arc::new(load_samples(&kit).unwrap());
+    let bank = Arc::new(load_samples(&kit, None).unwrap());
     let midimap = kit.load_midimap("midimap.xml").unwrap();
     (kit, bank, midimap)
 }
 
 fn run(engine: &mut Engine, channels: usize, frames: usize) -> Vec<Vec<f32>> {
     let mut buffers: Vec<Vec<f32>> = vec![vec![0.0; frames]; channels];
-    let mut slices: Vec<&mut [f32]> = buffers.iter_mut().map(|b| b.as_mut_slice()).collect();
-    engine.process(&mut slices);
+    engine.process(frames, &mut buffers);
     buffers
 }
 
@@ -331,5 +330,24 @@ fn all_notes_off_clears_voices() {
     engine.note_on(36, 127);
     assert_eq!(engine.active_voices(), 1);
     engine.all_notes_off();
+    assert_eq!(engine.active_voices(), 0);
+}
+
+#[test]
+fn resampled_kit_plays_at_target_rate() {
+    let dir = setup(
+        "resampled",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000; 4])],
+    );
+    let mut engine = load_engine(dir.join("drumkit.xml"), Some(22050)).unwrap();
+
+    engine.note_on(36, 127);
+    let out = run(&mut engine, 1, 4);
+    // 4 frames at 44.1 kHz were resampled down to 2 frames at 22.05 kHz.
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(out[0][1], 1000.0 / 32768.0));
+    assert_eq!(out[0][2], 0.0);
     assert_eq!(engine.active_voices(), 0);
 }

@@ -59,10 +59,6 @@ pub struct ChannelParams {
 
     #[id = "solo"]
     pub solo: BoolParam,
-
-    /// The MIDI note assigned to this channel.
-    #[id = "note"]
-    pub note: IntParam,
 }
 
 fn default_channel_names() -> [String; NUM_CHANNELS] {
@@ -108,12 +104,6 @@ fn pan_param(name: &str) -> FloatParam {
     .with_string_to_value(formatters::s2v_f32_panning())
 }
 
-fn note_param(name: &str) -> IntParam {
-    IntParam::new(name, 26, IntRange::Linear { min: 0, max: 127 })
-        .with_value_to_string(formatters::v2s_i32_note_formatter())
-        .with_string_to_value(formatters::s2v_i32_note_formatter())
-}
-
 impl ChannelParams {
     fn new(channel_number: usize) -> Self {
         let number = channel_number + 1;
@@ -122,7 +112,6 @@ impl ChannelParams {
             pan: pan_param(&format!("Pan {number}")),
             mute: BoolParam::new(format!("Mute {number}"), false),
             solo: BoolParam::new(format!("Solo {number}"), false),
-            note: note_param(&format!("Note {number}")),
         }
     }
 }

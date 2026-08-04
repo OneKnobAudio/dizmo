@@ -66,7 +66,7 @@ fn decodes_samples_and_deduplicates() {
     );
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit).unwrap();
+    let bank = load_samples(&kit, None).unwrap();
 
     // The two samples share one file, so it is decoded only once.
     assert_eq!(bank.len(), 1);
@@ -110,7 +110,7 @@ fn loads_multiple_files() {
     );
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit).unwrap();
+    let bank = load_samples(&kit, None).unwrap();
     assert_eq!(bank.len(), 2);
     assert_eq!(bank.file(&dir.join("kick.wav")).unwrap().sample_rate, 44100);
 }
@@ -130,7 +130,7 @@ fn errors_on_missing_file() {
     );
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit).unwrap_err();
+    let error = load_samples(&kit, None).unwrap_err();
     assert!(matches!(error, SampleError::Io { .. }), "got {error:?}");
 }
 
@@ -150,7 +150,7 @@ fn errors_on_invalid_wav() {
     fs::write(dir.join("kick.wav"), b"this is not a wav file").unwrap();
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit).unwrap_err();
+    let error = load_samples(&kit, None).unwrap_err();
     assert!(matches!(error, SampleError::Decode { .. }), "got {error:?}");
 }
 
@@ -169,7 +169,7 @@ fn errors_on_channel_out_of_range() {
     );
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit).unwrap_err();
+    let error = load_samples(&kit, None).unwrap_err();
     match error {
         SampleError::ChannelOutOfRange {
             sample,
@@ -202,7 +202,7 @@ fn decodes_stereo_int_pcm_normalized() {
     );
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit).unwrap();
+    let bank = load_samples(&kit, None).unwrap();
     let kick = &kit.instruments[0];
     let sample = &kick.samples[0];
 
@@ -217,4 +217,80 @@ fn decodes_stereo_int_pcm_normalized() {
     assert!(approx(-32768.0 / 32768.0, right[0]));
     assert!(approx(16384.0 / 32768.0, left[1]));
     assert!(approx(-16384.0 / 32768.0, right[1]));
+}
+
+const INST_XML: &str = r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="Kick" file="kick.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>"#;
+
+#[test]
+fn resamples_down_to_target_rate() {
+    let dir = write_kit("resample-down", INST_XML, &[]);
+    write_wav(&dir.join("kick.wav"), 1, 44100, &[1000; 8]);
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let bank = load_samples(&kit, Some(22050)).unwrap();
+    let file = bank.file(&dir.join("kick.wav")).unwrap();
+
+    assert_eq!(file.sample_rate, 22050);
+    assert_eq!(file.frames(), 4);
+    // A constant signal keeps its amplitude through the resampler.
+    for &sample in file.channels[0].iter() {
+        assert!(approx(1000.0 / 32768.0, sample));
+    }
+}
+
+#[test]
+fn resamples_up_to_target_rate() {
+    let dir = write_kit("resample-up", INST_XML, &[]);
+    write_wav(&dir.join("kick.wav"), 1, 22050, &[1, 2, 3]);
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let bank = load_samples(&kit, Some(44100)).unwrap();
+    let file = bank.file(&dir.join("kick.wav")).unwrap();
+    let data = &file.channels[0];
+
+    assert_eq!(file.sample_rate, 44100);
+    assert_eq!(data.len(), 6);
+    // Sample-grid positions are reproduced exactly; odd indices interpolate.
+    assert!(approx(1.0 / 32768.0, data[0]));
+    assert!(approx(2.0 / 32768.0, data[2]));
+    assert!(approx(3.0 / 32768.0, data[4]));
+}
+
+#[test]
+fn keeps_native_rate_when_target_matches() {
+    let dir = write_kit("resample-same", INST_XML, &[]);
+    write_wav(&dir.join("kick.wav"), 1, 44100, &[1000, 2000, 3000]);
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let bank = load_samples(&kit, Some(44100)).unwrap();
+    let file = bank.file(&dir.join("kick.wav")).unwrap();
+
+    assert_eq!(file.sample_rate, 44100);
+    assert_eq!(file.frames(), 3);
+}
+
+#[test]
+fn resampling_all_channels_of_a_stereo_file() {
+    let dir = write_kit("resample-stereo", INST_XML, &[]);
+    write_wav(
+        &dir.join("kick.wav"),
+        2,
+        44100,
+        &[1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000],
+    );
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let bank = load_samples(&kit, Some(22050)).unwrap();
+    let file = bank.file(&dir.join("kick.wav")).unwrap();
+
+    assert_eq!(file.channels.len(), 2);
+    assert_eq!(file.frames(), 2);
+    assert!(approx(1000.0 / 32768.0, file.channels[0][0]));
+    assert!(approx(-1000.0 / 32768.0, file.channels[1][0]));
 }

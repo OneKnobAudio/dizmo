@@ -6,9 +6,10 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
-use crate::kit::{Kit, MidiMap, SampleBank};
+use crate::kit::{Kit, KitError, MidiMap, SampleBank, SampleError, load_samples};
 
 /// Maximum number of simultaneously playing voices; the oldest is dropped
 /// first when exceeded.
@@ -125,11 +126,12 @@ impl Engine {
         self.voices.clear();
     }
 
-    /// Mixes all voices into `out`, one mono buffer per kit channel.
-    pub fn process(&mut self, out: &mut [&mut [f32]]) {
-        let frames = out.first().map_or(0, |buffer| buffer.len());
+    /// Mixes all voices into `out`, one mono `Vec` per kit channel. Each buffer
+    /// must be at least `frames` samples long; only the first `frames` samples
+    /// are written. No allocations happen here.
+    pub fn process(&mut self, frames: usize, out: &mut [Vec<f32>]) {
         for buffer in out.iter_mut() {
-            buffer.fill(0.0);
+            buffer[..frames].fill(0.0);
         }
 
         for voice in &mut self.voices {
@@ -143,7 +145,7 @@ impl Engine {
             let mut max_len = 0usize;
             for stream in &voice.streams {
                 max_len = max_len.max(stream.data.len());
-                if start >= stream.data.len() {
+                if start >= stream.data.len() || stream.output >= out.len() {
                     continue;
                 }
                 let data = &stream.data;
@@ -166,6 +168,11 @@ impl Engine {
         }
 
         self.voices.retain(|voice| !voice.finished);
+    }
+
+    /// The number of output channels this engine writes (one per kit channel).
+    pub fn kit_channels(&self) -> usize {
+        self.kit.channels.len()
     }
 
     /// The number of currently active voices (useful for debugging/tests).
@@ -295,4 +302,30 @@ impl XorShift {
         self.0 = x;
         (x >> 40) as f32 / (1u64 << 24) as f32
     }
+}
+
+/// Errors that can occur while building an [`Engine`] from a kit on disk.
+#[derive(Debug, thiserror::Error)]
+pub enum EngineLoadError {
+    #[error("failed to load kit: {0}")]
+    Kit(#[from] KitError),
+    #[error("failed to load samples: {0}")]
+    Samples(#[from] SampleError),
+}
+
+/// Loads a DrumGizmo kit (drumkit.xml, its instruments, midimap and samples)
+/// into a new [`Engine`]. Samples are resampled to `target_sample_rate` (the
+/// host rate) if it is set, so playback needs no runtime conversion. Performs
+/// disk I/O and allocation, so it must not be called on the audio thread.
+pub fn load_engine(
+    kit_path: impl AsRef<Path>,
+    target_sample_rate: Option<u32>,
+) -> Result<Engine, EngineLoadError> {
+    let kit = Arc::new(Kit::load(kit_path)?);
+    let midimap = match &kit.default_midimap {
+        Some(name) => kit.load_midimap(name)?,
+        None => MidiMap::default(),
+    };
+    let bank = Arc::new(load_samples(&kit, target_sample_rate)?);
+    Ok(Engine::new(kit, bank, midimap))
 }

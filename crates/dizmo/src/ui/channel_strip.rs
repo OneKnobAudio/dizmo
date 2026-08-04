@@ -3,12 +3,11 @@ use crate::ui::fader::show_fader;
 use crate::ui::knob::{KNOB_RADIUS, show_knob};
 use crate::ui::{
     ACCENT, ACCENT_BORDER, CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, MUTE_ACTIVE,
-    NOTE_BG, NOTE_TEXT, SOLO_ACTIVE, TEXT, TEXT_DIM,
+    SOLO_ACTIVE, TEXT, TEXT_DIM,
 };
 use egui::{
     Align2, Color32, FontId, Margin, Rect, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
 };
-use nice_plug::formatters;
 use nice_plug::prelude::*;
 
 /// Width of one channel strip card.
@@ -18,7 +17,7 @@ pub const STRIP_WIDTH: f32 = 128.0;
 pub const STRIP_HEIGHT: f32 = 460.0;
 
 /// Draws a single channel strip matching the mockup layout:
-/// number badge, editable name, MIDI note, solo/mute, choke assign, pan knob and vertical fader.
+/// number badge, editable name, solo/mute, choke assign, pan knob and vertical fader.
 pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, index: usize) {
     let params = state.params.clone();
     let (card_rect, _) = ui.allocate_exact_size(vec2(STRIP_WIDTH, STRIP_HEIGHT), Sense::hover());
@@ -65,37 +64,8 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         names[index] = state.name_buffers[index].clone();
     }
 
-    // --- MIDI note (editable) ---
-    let note_rect = Rect::from_min_size(
-        pos2(inner.left(), name_rect.bottom() + 6.0),
-        vec2(inner.width(), 24.0),
-    );
-    let note_response = text_field(
-        ui,
-        note_rect,
-        &mut state.note_buffers[index],
-        NOTE_BG,
-        NOTE_TEXT,
-        ACCENT_BORDER,
-    );
-    if note_response.changed() {
-        let note_param = &params.channels[index].note;
-        match (formatters::s2v_i32_note_formatter())(state.note_buffers[index].trim()) {
-            Some(note) if note != note_param.value() => {
-                setter.begin_set_parameter(note_param);
-                setter.set_parameter(note_param, note);
-                setter.end_set_parameter(note_param);
-            }
-            Some(_) => {}
-            None => {
-                state.note_buffers[index] =
-                    (formatters::v2s_i32_note_formatter())(note_param.value());
-            }
-        }
-    }
-
     // --- Solo / Mute ---
-    let button_y = note_rect.bottom() + 6.0;
+    let button_y = name_rect.bottom() + 6.0;
     let button_gap = 6.0;
     let button_width = (inner.width() - button_gap) / 2.0;
     let solo_rect = Rect::from_min_size(pos2(inner.left(), button_y), vec2(button_width, 24.0));

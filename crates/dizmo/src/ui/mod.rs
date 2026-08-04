@@ -3,7 +3,6 @@
 use crate::params::{DizmoParams, NUM_CHANNELS};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
-use nice_plug::formatters;
 use nice_plug::prelude::*;
 use nice_plug_egui::{EguiNiceSettings, EguiState, create_egui_editor};
 use std::any::Any;
@@ -27,8 +26,6 @@ pub(crate) const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf4, 0xf7);
 pub(crate) const TEXT_DIM: Color32 = Color32::from_rgb(0x8b, 0x90, 0x99);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x55, 0x84, 0xc8);
 pub(crate) const ACCENT_BORDER: Color32 = Color32::from_rgb(0x3f, 0x6f, 0xb5);
-pub(crate) const NOTE_BG: Color32 = Color32::from_rgb(0x1a, 0x1d, 0x23);
-pub(crate) const NOTE_TEXT: Color32 = Color32::from_rgb(0xe6, 0xed, 0xf7);
 pub(crate) const KNOB_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
 pub(crate) const INDICATOR: Color32 = Color32::from_rgb(0xe8, 0xec, 0xf1);
 pub(crate) const SOLO_ACTIVE: Color32 = Color32::from_rgb(0x9a, 0x8a, 0x3c);
@@ -53,7 +50,6 @@ pub struct EditorState {
     /// where pan has no effect, so it is hidden there.
     pub show_pan: bool,
     pub name_buffers: Vec<String>,
-    pub note_buffers: Vec<String>,
     pub choke_assign: Option<usize>,
 }
 
@@ -63,16 +59,10 @@ impl EditorState {
             let names = params.channel_names.lock().unwrap();
             names.to_vec()
         };
-        let note_buffers = params
-            .channels
-            .iter()
-            .map(|channel| (formatters::v2s_i32_note_formatter())(channel.note.value()))
-            .collect();
         Self {
             params,
             show_pan,
             name_buffers,
-            note_buffers,
             choke_assign: None,
         }
     }

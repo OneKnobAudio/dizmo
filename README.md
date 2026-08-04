@@ -7,13 +7,12 @@ It acts as a drum sampler: a DrumGizmo kit provides a set of drum instruments (k
 ## Features
 
 - Load DrumGizmo kit files (XML kit definition, sample sets, velocity layers, MIDI mapping).
-- Play kits via MIDI with per-instrument note assignment.
+- Play kits via MIDI using the kit's MIDI mapping.
 - Up to 16 channel strips, one per output, each with:
   - Editable channel name.
   - Volume fader: 0 dB center, +/- 12 dB range.
   - Pan control for the stereo MAIN mix (stereo plugin only).
   - Fixed channel number indicator.
-  - Assignable MIDI note indicator.
   - Solo and mute.
   - MIDI choke (a channel can be choked by one or more other channels).
 - Two plugin variants sharing the same channel strips:
