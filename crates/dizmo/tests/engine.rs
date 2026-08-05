@@ -191,6 +191,66 @@ fn maps_midi_notes_to_their_output_channels() {
 }
 
 #[test]
+fn maps_instruments_to_their_output_channels() {
+    let dir = setup(
+        "instruments-per-channel",
+        TWO_CHANNEL_DRUMKIT,
+        &[
+            ("inst_kick.xml", INST_KICK),
+            ("inst_snare.xml", INST_SNARE),
+            ("midimap.xml", TWO_CHANNEL_MIDIMAP),
+        ],
+        &[
+            ("kick.wav", 1, &[1000, 2000]),
+            ("snare.wav", 1, &[4000, 5000]),
+        ],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let engine = Engine::new(kit, bank, midimap);
+
+    assert_eq!(
+        engine.instruments_per_channel(),
+        vec![Some("Kick".to_string()), Some("Snare".to_string())]
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn channel_without_main_instrument_falls_back_to_first_mapped() {
+    let drumkit = r#"<drumkit version="2.0">
+  <metadata><title>T</title><description>d</description></metadata>
+  <channels>
+    <channel name="Kick"/>
+    <channel name="Room"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+      <channelmap in="Kick" out="Room"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+    let dir = setup(
+        "instruments-per-channel-fallback",
+        drumkit,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000, 2000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let engine = Engine::new(kit, bank, midimap);
+
+    // "Room" has no main instrument, so it falls back to the first routed one.
+    assert_eq!(
+        engine.instruments_per_channel(),
+        vec![Some("Kick".to_string()), Some("Kick".to_string())]
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn selects_velocity_layer_by_power() {
     let dir = setup(
         "velocity",

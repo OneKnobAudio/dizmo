@@ -35,12 +35,13 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
     );
     let center_x = card_rect.center().x;
 
-    // --- Channel number indicator ---
+    // --- Channel indicator: the instrument assigned to this channel by the
+    // loaded kit, or the channel number while no kit is loaded ---
     ui.painter().text(
         pos2(center_x, inner.top() + 8.0),
         Align2::CENTER_CENTER,
-        format!("{}", index + 1),
-        FontId::proportional(13.0),
+        channel_indicator_label(state, index),
+        FontId::proportional(11.0),
         TEXT,
     );
 
@@ -215,8 +216,21 @@ fn toggle_bool(setter: &ParamSetter, param: &BoolParam) {
     setter.end_set_parameter(param);
 }
 
-/// The MIDI note number(s) mapped to this channel by the loaded midimap, as a
-/// compact "36" or "36 38" label; `None` when no kit is loaded or the channel
+/// The instrument name shown in the channel indicator for a loaded kit
+/// (falling back to the channel number when the channel is unmapped), or the
+/// plain channel number while no kit is loaded.
+fn channel_indicator_label(state: &EditorState, index: usize) -> String {
+    match &state.load_status {
+        LoadStatus::Loaded { instruments, .. } => instruments
+            .get(index)
+            .and_then(|name| name.clone())
+            .unwrap_or_else(|| format!("{}", index + 1)),
+        _ => format!("{}", index + 1),
+    }
+}
+
+/// The MIDI note name(s) mapped to this channel by the loaded midimap, as a
+/// compact "C1" or "C1 D1" label; `None` when no kit is loaded or the channel
 /// is unmapped.
 fn midi_note_label(state: &EditorState, index: usize) -> Option<String> {
     let notes = match &state.load_status {
@@ -229,8 +243,34 @@ fn midi_note_label(state: &EditorState, index: usize) -> Option<String> {
     Some(
         notes
             .iter()
-            .map(u8::to_string)
+            .map(|&note| midi_note_name(note))
             .collect::<Vec<_>>()
             .join(" "),
     )
+}
+
+/// The note name for a MIDI note, with middle C (60) labelled C3 — the same
+/// convention most drum software uses, so a GM kick (36) reads as C1.
+fn midi_note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = (note / 12) as i8 - 2;
+    format!("{}{}", NAMES[(note % 12) as usize], octave)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::midi_note_name;
+
+    #[test]
+    fn midi_note_names_use_the_drum_convention() {
+        assert_eq!(midi_note_name(35), "B0");
+        assert_eq!(midi_note_name(36), "C1");
+        assert_eq!(midi_note_name(38), "D1");
+        assert_eq!(midi_note_name(60), "C3");
+        assert_eq!(midi_note_name(61), "C#3");
+        assert_eq!(midi_note_name(0), "C-2");
+        assert_eq!(midi_note_name(127), "G8");
+    }
 }

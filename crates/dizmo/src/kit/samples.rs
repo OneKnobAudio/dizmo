@@ -2,11 +2,14 @@
 //! immutable mono buffers the engine can read.
 //!
 //! Loading happens off the audio thread (`Kit::load` -> `load_samples`); the
-//! resulting [`SampleBank`] is read-only and shared with the engine.
+//! resulting [`SampleBank`] is read-only and shared with the engine. Files are
+//! decoded in parallel, and only the channels that samples actually reference
+//! are decoded and resampled.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 
 use super::{AudioFile, Kit};
 
@@ -14,14 +17,19 @@ use super::{AudioFile, Kit};
 #[derive(Debug)]
 pub struct DecodedFile {
     pub sample_rate: u32,
-    /// One mono buffer per channel in the file.
-    pub channels: Vec<Arc<[f32]>>,
+    /// One mono buffer per file channel, in file order. Channels that no
+    /// sample references are `None` and were never decoded.
+    pub channels: Vec<Option<Arc<[f32]>>>,
 }
 
 impl DecodedFile {
     /// The number of frames (per-channel samples).
     pub fn frames(&self) -> usize {
-        self.channels.first().map_or(0, |channel| channel.len())
+        self.channels
+            .iter()
+            .flatten()
+            .next()
+            .map_or(0, |channel| channel.len())
     }
 }
 
@@ -44,7 +52,7 @@ impl SampleBank {
     /// `base_dir` (the directory of the instrument XML that declared it).
     pub fn audio_file(&self, base_dir: &Path, audio: &AudioFile) -> Option<&Arc<[f32]>> {
         let file = self.files.get(&base_dir.join(&audio.file))?;
-        file.channels.get(audio.file_channel)
+        file.channels.get(audio.file_channel)?.as_ref()
     }
 
     /// The number of unique decoded files.
@@ -57,11 +65,20 @@ impl SampleBank {
     }
 }
 
+/// One unique sample file to decode: its resolved path, the name of the first
+/// sample that references it (for error messages), and the 0-based channels it
+/// references.
+struct SampleTask {
+    path: PathBuf,
+    sample: String,
+    channels: Vec<usize>,
+}
+
 /// Decodes and caches every sample referenced by `kit`.
 ///
 /// When `target_sample_rate` is set and differs from a file's own sample rate,
-/// every channel is resampled to that rate so the engine can play back at the
-/// host rate 1:1.
+/// every referenced channel is resampled to that rate so the engine can play
+/// back at the host rate 1:1.
 ///
 /// Returns the first error encountered (missing file, malformed WAV, or a
 /// `filechannel` outside the file's channel count).
@@ -70,59 +87,124 @@ pub fn load_samples(kit: &Kit, target_sample_rate: Option<u32>) -> Result<Sample
 }
 
 /// Like [`load_samples`], but reports decoding progress via `progress(loaded, total)`.
+///
+/// Files are decoded on a worker pool sized to the machine. Errors are still
+/// reported in kit declaration order: the first file (by load order) that
+/// fails determines the returned error, matching serial loading.
 pub fn load_samples_with_progress(
     kit: &Kit,
     target_sample_rate: Option<u32>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<SampleBank, SampleError> {
-    let total = unique_file_count(kit);
-    let mut files = HashMap::new();
-    let mut loaded = 0;
+    let tasks = unique_files(kit);
+    if tasks.is_empty() {
+        return Ok(SampleBank::default());
+    }
 
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(tasks.len());
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel();
+    let mut bank = None;
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let next = &next;
+            let tasks = &tasks;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(task) = tasks.get(index) else {
+                        break;
+                    };
+                    let decoded = decode_file(task, target_sample_rate);
+                    let _ = tx.send((index, decoded));
+                }
+            });
+        }
+        drop(tx);
+
+        // Results arrive out of order; collect them all and reduce in load
+        // order so the first failing file decides the error.
+        let mut results: Vec<Option<Result<DecodedFile, SampleError>>> =
+            (0..tasks.len()).map(|_| None).collect();
+        let mut received = 0;
+        let mut loaded = 0;
+        while received < tasks.len() {
+            match rx.recv() {
+                Ok((index, decoded)) => {
+                    received += 1;
+                    if decoded.is_ok() {
+                        loaded += 1;
+                        progress(loaded, tasks.len());
+                    }
+                    results[index] = Some(decoded);
+                }
+                Err(_) => break,
+            }
+        }
+        bank = Some(build_bank(&tasks, results));
+    });
+
+    bank.expect("sample loading always completes and assigns the bank")
+}
+
+/// The unique sample files referenced by `kit`, in load order, each with the
+/// name of its first referencing sample and the 0-based channels it uses.
+fn unique_files(kit: &Kit) -> Vec<SampleTask> {
+    let mut indexes: HashMap<PathBuf, usize> = HashMap::new();
+    let mut tasks: Vec<SampleTask> = Vec::new();
     for instrument in &kit.instruments {
         for sample in &instrument.samples {
             for audio in &sample.audio_files {
                 let path = instrument.base_dir.join(&audio.file);
-                if files.contains_key(&path) {
-                    continue;
-                }
-
-                let decoded = decode_file(&path, target_sample_rate)?;
-                if audio.file_channel >= decoded.channels.len() {
-                    return Err(SampleError::ChannelOutOfRange {
-                        sample: sample.name.clone(),
+                if let Some(&index) = indexes.get(&path) {
+                    tasks[index].channels.push(audio.file_channel);
+                } else {
+                    indexes.insert(path.clone(), tasks.len());
+                    tasks.push(SampleTask {
                         path,
-                        channel: audio.file_channel,
-                        num_channels: decoded.channels.len(),
+                        sample: sample.name.clone(),
+                        channels: vec![audio.file_channel],
                     });
                 }
-                files.insert(path, Arc::new(decoded));
-                loaded += 1;
-                progress(loaded, total);
             }
         }
     }
+    tasks
+}
 
+/// Reduces parallel decode results into a bank in load order, returning the
+/// first error and inserting every successfully decoded file.
+fn build_bank(
+    tasks: &[SampleTask],
+    results: Vec<Option<Result<DecodedFile, SampleError>>>,
+) -> Result<SampleBank, SampleError> {
+    let mut files = HashMap::with_capacity(tasks.len());
+    for (task, result) in tasks.iter().zip(results) {
+        let decoded = match result {
+            Some(Ok(decoded)) => decoded,
+            Some(Err(error)) => return Err(error),
+            None => {
+                return Err(SampleError::Internal(
+                    "a decode worker finished without reporting a result".to_string(),
+                ));
+            }
+        };
+        files.insert(task.path.clone(), Arc::new(decoded));
+    }
     Ok(SampleBank { files })
 }
 
-/// The number of unique sample files referenced by `kit`, in load order.
-fn unique_file_count(kit: &Kit) -> usize {
-    let mut seen = std::collections::HashSet::new();
-    let mut count = 0;
-    for instrument in &kit.instruments {
-        for sample in &instrument.samples {
-            for audio in &sample.audio_files {
-                if seen.insert(instrument.base_dir.join(&audio.file)) {
-                    count += 1;
-                }
-            }
-        }
-    }
-    count
-}
-
-fn decode_file(path: &Path, target_sample_rate: Option<u32>) -> Result<DecodedFile, SampleError> {
+/// Decodes the channels of `task.path` that samples reference, resampling them
+/// to `target_sample_rate` when it differs from the file's own rate.
+fn decode_file(
+    task: &SampleTask,
+    target_sample_rate: Option<u32>,
+) -> Result<DecodedFile, SampleError> {
+    let path = &task.path;
     let mut reader = hound::WavReader::open(path).map_err(|error| match error {
         hound::Error::IoError(source) => SampleError::Io {
             path: path.to_path_buf(),
@@ -135,36 +217,79 @@ fn decode_file(path: &Path, target_sample_rate: Option<u32>) -> Result<DecodedFi
     })?;
     let spec = reader.spec();
     let num_channels = spec.channels as usize;
+    let frame_count = reader.duration() as usize;
 
-    let mut channels: Vec<Vec<f32>> = vec![Vec::new(); num_channels];
+    for &channel in &task.channels {
+        if channel >= num_channels {
+            return Err(SampleError::ChannelOutOfRange {
+                sample: task.sample.clone(),
+                path: path.to_path_buf(),
+                channel,
+                num_channels,
+            });
+        }
+    }
 
+    let mut wanted = vec![false; num_channels];
+    for &channel in &task.channels {
+        wanted[channel] = true;
+    }
+
+    // Preallocate only the referenced channels from the frame count, avoiding
+    // growth reallocs for long samples.
+    let mut channels: Vec<Vec<f32>> = wanted
+        .iter()
+        .map(|&keep| {
+            if keep {
+                Vec::with_capacity(frame_count)
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+
+    let mut channel = 0usize;
     match spec.sample_format {
         // Normalize integer PCM to [-1, 1] by the full-scale divisor.
         hound::SampleFormat::Int => {
             let divisor = 2f32.powi((spec.bits_per_sample - 1) as i32);
-            for (index, sample) in reader.samples::<i32>().enumerate() {
+            for sample in reader.samples::<i32>() {
                 let sample = sample.map_err(|source| SampleError::Decode {
                     path: path.to_path_buf(),
                     source,
                 })?;
-                channels[index % num_channels].push(sample as f32 / divisor);
+                if wanted[channel] {
+                    channels[channel].push(sample as f32 / divisor);
+                }
+                channel += 1;
+                if channel == num_channels {
+                    channel = 0;
+                }
             }
         }
         hound::SampleFormat::Float => {
-            for (index, sample) in reader.samples::<f32>().enumerate() {
+            for sample in reader.samples::<f32>() {
                 let sample = sample.map_err(|source| SampleError::Decode {
                     path: path.to_path_buf(),
                     source,
                 })?;
-                channels[index % num_channels].push(sample);
+                if wanted[channel] {
+                    channels[channel].push(sample);
+                }
+                channel += 1;
+                if channel == num_channels {
+                    channel = 0;
+                }
             }
         }
     }
 
     let sample_rate = match target_sample_rate {
         Some(target) if target != spec.sample_rate => {
-            for channel in channels.iter_mut() {
-                *channel = resample(channel, spec.sample_rate, target);
+            for (buffer, keep) in channels.iter_mut().zip(&wanted) {
+                if *keep {
+                    *buffer = resample(buffer, spec.sample_rate, target);
+                }
             }
             target
         }
@@ -173,7 +298,11 @@ fn decode_file(path: &Path, target_sample_rate: Option<u32>) -> Result<DecodedFi
 
     Ok(DecodedFile {
         sample_rate,
-        channels: channels.into_iter().map(Into::into).collect(),
+        channels: channels
+            .into_iter()
+            .zip(wanted)
+            .map(|(buffer, keep)| if keep { Some(buffer.into()) } else { None })
+            .collect(),
     })
 }
 
@@ -181,25 +310,52 @@ fn decode_file(path: &Path, target_sample_rate: Option<u32>) -> Result<DecodedFi
 /// windowed-sinc kernel. Downsampling is anti-aliased by scaling the kernel by
 /// the ratio. The result is normalized by the summed kernel weights so signals
 /// keep their amplitude at the buffer edges.
+///
+/// Kernel weights depend only on the fractional position of an output sample,
+/// which repeats with the reduced `src_rate/dst_rate` period, so they are
+/// precomputed once per phase instead of re-evaluated per sample. That keeps
+/// this loading hot loop to a table lookup and multiply-accumulate.
 fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
     const RADIUS: f64 = 3.0;
+    const MAX_PHASES: usize = 256;
+
     let ratio = src_rate as f64 / dst_rate as f64;
     let scale = ratio.max(1.0);
     let support = (RADIUS / scale).ceil() as i64;
+    let taps = (support * 2 + 1) as usize;
     let out_len = (data.len() as f64 / ratio).ceil() as usize;
+
+    let divisor = gcd(src_rate as u64, dst_rate as u64);
+    let num = src_rate as u64 / divisor;
+    let den = dst_rate as u64 / divisor;
+    // The fractional phase repeats every `den` output samples; cap the table
+    // so uncommon sample rates cannot balloon memory.
+    let phases = (den as usize).min(MAX_PHASES);
+
+    let mut table = Vec::with_capacity(phases * taps);
+    for phase in 0..phases {
+        let frac = phase as f64 / phases as f64;
+        for tap in 0..taps {
+            let offset = tap as i64 - support;
+            table.push(lanczos((frac - offset as f64) * scale, RADIUS));
+        }
+    }
 
     let mut out = Vec::with_capacity(out_len);
     for j in 0..out_len {
-        let pos = j as f64 * ratio;
-        let center = pos.floor() as i64;
+        let position = j as u64 * num;
+        let center = (position / den) as i64;
+        let phase = ((position % den) * phases as u64 / den) as usize;
+        let base = phase * taps;
+
         let mut sum = 0.0;
         let mut weight_sum = 0.0;
-        for k in (center - support)..=(center + support) {
+        for tap in 0..taps {
+            let k = center - support + tap as i64;
             if k < 0 || k as usize >= data.len() {
                 continue;
             }
-            let x = (pos - k as f64) * scale;
-            let weight = lanczos(x, RADIUS);
+            let weight = table[base + tap];
             sum += data[k as usize] as f64 * weight;
             weight_sum += weight;
         }
@@ -210,6 +366,16 @@ fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
         });
     }
     out
+}
+
+/// Greatest common divisor, used to reduce the resampling ratio.
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    a
 }
 
 /// The Lanczos kernel: `sinc(x) * sinc(x / radius)`, zero outside `radius`.
@@ -245,4 +411,7 @@ pub enum SampleError {
         channel: usize,
         num_channels: usize,
     },
+
+    #[error("internal error while loading samples: {0}")]
+    Internal(String),
 }

@@ -213,6 +213,27 @@ impl Engine {
         per_channel
     }
 
+    /// The instrument assigned to each kit output channel via its channelmap,
+    /// preferring the `main` channelmap entry and falling back to the first
+    /// instrument routed to that channel. `None` for channels no instrument
+    /// routes to. Shown in the editor strips when a kit is loaded.
+    pub fn instruments_per_channel(&self) -> Vec<Option<String>> {
+        let mut main = vec![None; self.kit.channels.len()];
+        let mut first = vec![None; self.kit.channels.len()];
+        for instrument in &self.kit.instruments {
+            for map in &instrument.channel_map {
+                let Some(&output) = self.output_index.get(&map.out_name) else {
+                    continue;
+                };
+                first[output].get_or_insert_with(|| instrument.name.clone());
+                if map.is_main {
+                    main[output].get_or_insert_with(|| instrument.name.clone());
+                }
+            }
+        }
+        main.into_iter().zip(first).map(|(m, f)| m.or(f)).collect()
+    }
+
     /// The number of currently active voices (useful for debugging/tests).
     pub fn active_voices(&self) -> usize {
         self.voices.len()

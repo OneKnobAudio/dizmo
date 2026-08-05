@@ -20,8 +20,13 @@ pub enum LoadTask {
 /// Load status messages sent from the loader thread to the editor GUI.
 pub(crate) enum KitStatus {
     /// The kit was loaded; carries its display name from drumkit.xml and, per
-    /// kit channel, the MIDI notes from the midimap that trigger sound on it.
-    Loaded { name: String, notes: Vec<Vec<u8>> },
+    /// kit channel, the instrument assigned to it and the MIDI notes from the
+    /// midimap that trigger sound on it.
+    Loaded {
+        name: String,
+        notes: Vec<Vec<u8>>,
+        instruments: Vec<Option<String>>,
+    },
     /// The kit failed to load; carries the error message.
     Failed(String),
     /// Decoding progress, as `(files_decoded, total_files)`.
@@ -318,8 +323,13 @@ macro_rules! impl_dizmo_plugin {
                                 let name = engine.kit_name().to_string();
                                 eprintln!("[dizmo] kit '{name}' loaded in {:?}", start.elapsed());
                                 let notes = engine.notes_per_channel();
+                                let instruments = engine.instruments_per_channel();
                                 let _ = engine_tx.send(Ok(engine));
-                                let _ = status_tx.send(KitStatus::Loaded { name, notes });
+                                let _ = status_tx.send(KitStatus::Loaded {
+                                    name,
+                                    notes,
+                                    instruments,
+                                });
                             }
                             Ok(Err(err)) => {
                                 let message = err.to_string();

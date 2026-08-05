@@ -110,6 +110,7 @@ pub enum LoadStatus {
     Loaded {
         name: String,
         notes: Vec<Vec<u8>>,
+        instruments: Vec<Option<String>>,
     },
     Failed(String),
 }
@@ -354,7 +355,15 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
     if let Some(status_rx) = &state.status_rx {
         while let Ok(status) = status_rx.try_recv() {
             state.load_status = match status {
-                KitStatus::Loaded { name, notes } => LoadStatus::Loaded { name, notes },
+                KitStatus::Loaded {
+                    name,
+                    notes,
+                    instruments,
+                } => LoadStatus::Loaded {
+                    name,
+                    notes,
+                    instruments,
+                },
                 KitStatus::Failed(message) => LoadStatus::Failed(message),
                 KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },
             };

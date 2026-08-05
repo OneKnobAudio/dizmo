@@ -239,7 +239,7 @@ fn resamples_down_to_target_rate() {
     assert_eq!(file.sample_rate, 22050);
     assert_eq!(file.frames(), 4);
     // A constant signal keeps its amplitude through the resampler.
-    for &sample in file.channels[0].iter() {
+    for &sample in file.channels[0].as_ref().unwrap().iter() {
         assert!(approx(1000.0 / 32768.0, sample));
     }
 }
@@ -252,7 +252,7 @@ fn resamples_up_to_target_rate() {
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
     let bank = load_samples(&kit, Some(44100)).unwrap();
     let file = bank.file(&dir.join("kick.wav")).unwrap();
-    let data = &file.channels[0];
+    let data = file.channels[0].as_ref().unwrap();
 
     assert_eq!(file.sample_rate, 44100);
     assert_eq!(data.len(), 6);
@@ -277,12 +277,21 @@ fn keeps_native_rate_when_target_matches() {
 
 #[test]
 fn resampling_all_channels_of_a_stereo_file() {
-    let dir = write_kit("resample-stereo", INST_XML, &[]);
-    write_wav(
-        &dir.join("kick.wav"),
-        2,
-        44100,
-        &[1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000],
+    let dir = write_kit(
+        "resample-stereo",
+        r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="L" file="kick.wav" filechannel="1"/>
+      <audiofile channel="R" file="kick.wav" filechannel="2"/>
+    </sample>
+  </samples>
+</instrument>"#,
+        &[(
+            "kick.wav",
+            2,
+            &[1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000],
+        )],
     );
 
     let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
@@ -291,8 +300,14 @@ fn resampling_all_channels_of_a_stereo_file() {
 
     assert_eq!(file.channels.len(), 2);
     assert_eq!(file.frames(), 2);
-    assert!(approx(1000.0 / 32768.0, file.channels[0][0]));
-    assert!(approx(-1000.0 / 32768.0, file.channels[1][0]));
+    assert!(approx(
+        1000.0 / 32768.0,
+        file.channels[0].as_ref().unwrap()[0]
+    ));
+    assert!(approx(
+        -1000.0 / 32768.0,
+        file.channels[1].as_ref().unwrap()[0]
+    ));
 }
 
 #[test]
@@ -323,4 +338,58 @@ fn reports_decoding_progress() {
     assert_eq!(bank.len(), 2);
     // The shared file is counted once; progress counts decoded files.
     assert_eq!(updates, vec![(1, 2), (2, 2)]);
+}
+
+#[test]
+fn skips_channels_no_sample_references() {
+    let dir = write_kit(
+        "skip-channel",
+        r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="L" file="kick.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>"#,
+        // [L0, R0, L1, R1]
+        &[("kick.wav", 2, &[100, 200, 300, 400])],
+    );
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let bank = load_samples(&kit, Some(22050)).unwrap();
+    let file = bank.file(&dir.join("kick.wav")).unwrap();
+
+    // The unreferenced right channel is never decoded or resampled.
+    assert_eq!(file.channels.len(), 2);
+    assert!(file.channels[0].is_some());
+    assert!(file.channels[1].is_none());
+    assert_eq!(file.frames(), 1);
+
+    let kick = &kit.instruments[0];
+    let left = bank
+        .audio_file(&kick.base_dir, &kick.samples[0].audio_files[0])
+        .unwrap();
+    assert!(approx(100.0 / 32768.0, left[0]));
+}
+
+#[test]
+fn parallel_load_reports_first_error_in_load_order() {
+    let dir = write_kit(
+        "parallel-error",
+        r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="Kick" file="a.wav" filechannel="1"/>
+      <audiofile channel="Kick" file="bad.wav" filechannel="1"/>
+      <audiofile channel="Kick" file="c.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>"#,
+        &[("a.wav", 1, &[1, 2]), ("c.wav", 1, &[3, 4])],
+    );
+    fs::write(dir.join("bad.wav"), b"not a wav file").unwrap();
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let error = load_samples(&kit, None).unwrap_err();
+    assert!(matches!(error, SampleError::Decode { .. }), "got {error:?}");
 }
