@@ -50,7 +50,6 @@ pub struct EditorState {
     /// Whether the pan knob is shown: the multi plugin routes each channel to its own output
     /// where pan has no effect, so it is hidden there.
     pub show_pan: bool,
-    pub name_buffers: Vec<String>,
     /// Dispatches a kit load to the loader thread and returns immediately.
     pub load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
     /// Receives load results from the loader thread, polled each frame.
@@ -81,14 +80,9 @@ impl EditorState {
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
     ) -> Self {
-        let name_buffers = {
-            let names = params.channel_names.lock().unwrap();
-            names.to_vec()
-        };
         Self {
             params,
             show_pan,
-            name_buffers,
             load_kit,
             status_rx,
             load_status: LoadStatus::Idle,
@@ -205,6 +199,7 @@ impl Editor for DizmoEditor {
 
 /// Draws the complete editor: header bar and the scrollable channel strip area.
 fn draw_ui(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState) {
+    ui.set_min_width(420.0);
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0.0, BG);
 
@@ -450,7 +445,7 @@ fn draw_status_label(
     center_y: f32,
     tooltip: Option<String>,
 ) {
-    let max_width = (right - 170.0).max(120.0);
+    let max_width = (right - 170.0).max(250.0);
     let text = truncate_to_width(ui, text, &font_id, max_width);
     let galley = ui
         .ctx()

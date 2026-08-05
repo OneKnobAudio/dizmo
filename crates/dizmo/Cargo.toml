@@ -12,6 +12,7 @@ roxmltree = "0.20"
 thiserror = "2"
 hound = "3.5"
 crossbeam-channel = "0.5"
+ardftsrc = { version = "0.0.16", features = ["rayon"] }
 
 [lib]
 crate-type = ["cdylib", "lib"]

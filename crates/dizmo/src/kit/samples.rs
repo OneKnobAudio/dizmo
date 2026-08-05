@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
+use ardftsrc::{InterleavedResampler, PRESET_GOOD};
+
 use super::{AudioFile, Kit};
 
 /// A fully decoded WAV file, split into one mono buffer per channel.
@@ -288,7 +290,7 @@ fn decode_file(
         Some(target) if target != spec.sample_rate => {
             for (buffer, keep) in channels.iter_mut().zip(&wanted) {
                 if *keep {
-                    *buffer = resample(buffer, spec.sample_rate, target);
+                    *buffer = resample(buffer, spec.sample_rate, target)?;
                 }
             }
             target
@@ -315,79 +317,16 @@ fn decode_file(
 /// which repeats with the reduced `src_rate/dst_rate` period, so they are
 /// precomputed once per phase instead of re-evaluated per sample. That keeps
 /// this loading hot loop to a table lookup and multiply-accumulate.
-fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
-    const RADIUS: f64 = 3.0;
-    const MAX_PHASES: usize = 256;
-
-    let ratio = src_rate as f64 / dst_rate as f64;
-    let scale = ratio.max(1.0);
-    let support = (RADIUS / scale).ceil() as i64;
-    let taps = (support * 2 + 1) as usize;
-    let out_len = (data.len() as f64 / ratio).ceil() as usize;
-
-    let divisor = gcd(src_rate as u64, dst_rate as u64);
-    let num = src_rate as u64 / divisor;
-    let den = dst_rate as u64 / divisor;
-    // The fractional phase repeats every `den` output samples; cap the table
-    // so uncommon sample rates cannot balloon memory.
-    let phases = (den as usize).min(MAX_PHASES);
-
-    let mut table = Vec::with_capacity(phases * taps);
-    for phase in 0..phases {
-        let frac = phase as f64 / phases as f64;
-        for tap in 0..taps {
-            let offset = tap as i64 - support;
-            table.push(lanczos((frac - offset as f64) * scale, RADIUS));
-        }
-    }
-
-    let mut out = Vec::with_capacity(out_len);
-    for j in 0..out_len {
-        let position = j as u64 * num;
-        let center = (position / den) as i64;
-        let phase = ((position % den) * phases as u64 / den) as usize;
-        let base = phase * taps;
-
-        let mut sum = 0.0;
-        let mut weight_sum = 0.0;
-        for tap in 0..taps {
-            let k = center - support + tap as i64;
-            if k < 0 || k as usize >= data.len() {
-                continue;
-            }
-            let weight = table[base + tap];
-            sum += data[k as usize] as f64 * weight;
-            weight_sum += weight;
-        }
-        out.push(if weight_sum.abs() > 0.0 {
-            (sum / weight_sum) as f32
-        } else {
-            0.0
-        });
-    }
-    out
-}
-
-/// Greatest common divisor, used to reduce the resampling ratio.
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let remainder = a % b;
-        a = b;
-        b = remainder;
-    }
-    a
-}
-
-/// The Lanczos kernel: `sinc(x) * sinc(x / radius)`, zero outside `radius`.
-fn lanczos(x: f64, radius: f64) -> f64 {
-    if x.abs() < 1e-9 {
-        return 1.0;
-    }
-    if x.abs() >= radius {
-        return 0.0;
-    }
-    let p = std::f64::consts::PI * x;
-    radius * p.sin() * (p / radius).sin() / (p * p)
+fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>, SampleError> {
+    let config = PRESET_GOOD
+        .with_input_rate(src_rate as usize)
+        .with_output_rate(dst_rate as usize)
+        .with_channels(1);
+    let mut resampler = InterleavedResampler::<f32>::new(config).unwrap();
+    let out = resampler
+        .process_all(data)
+        .map_err(|e| SampleError::Internal(e.to_string()))?;
+    Ok(out.interleave())
 }
 
 /// Errors that can occur while loading and decoding samples.
@@ -414,4 +353,6 @@ pub enum SampleError {
 
     #[error("internal error while loading samples: {0}")]
     Internal(String),
+    #[error("resampling error: {0}")]
+    Resampling(String),
 }

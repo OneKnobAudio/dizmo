@@ -1,7 +1,7 @@
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
 use std::num::NonZeroU32;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// The number of possible channel strips / outputs.
 pub const NUM_CHANNELS: usize = 16;
@@ -30,10 +30,6 @@ pub struct DizmoParams {
     /// One set of parameters per channel strip.
     #[nested(array)]
     pub channels: [ChannelParams; NUM_CHANNELS],
-
-    /// User editable channel names. Persistent, not automatable.
-    #[persist = "channel-names"]
-    pub channel_names: Arc<Mutex<[String; NUM_CHANNELS]>>,
 }
 
 #[derive(Params)]
@@ -51,10 +47,6 @@ pub struct ChannelParams {
 
     #[id = "solo"]
     pub solo: BoolParam,
-}
-
-fn default_channel_names() -> [String; NUM_CHANNELS] {
-    std::array::from_fn(|idx| AUX_OUTPUT_NAMES[idx].to_string())
 }
 
 fn fader_param(name: &str) -> FloatParam {
@@ -118,7 +110,6 @@ impl Default for DizmoParams {
                 },
             ),
             channels: std::array::from_fn(ChannelParams::new),
-            channel_names: Arc::new(Mutex::new(default_channel_names())),
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::ui::{
     SOLO_ACTIVE, TEXT, TEXT_DIM,
 };
 use egui::{
-    Align2, Color32, FontId, Margin, Rect, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
+    Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
 };
 use nice_plug::prelude::*;
 
@@ -38,34 +38,15 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
     // --- Channel indicator: the instrument assigned to this channel by the
     // loaded kit, or the channel number while no kit is loaded ---
     ui.painter().text(
-        pos2(center_x, inner.top() + 8.0),
+        pos2(center_x, inner.top() + 16.0),
         Align2::CENTER_CENTER,
         channel_indicator_label(state, index),
-        FontId::proportional(11.0),
+        FontId::proportional(12.0),
         TEXT,
     );
-
-    // --- Channel name (editable) ---
-    let name_rect = Rect::from_min_size(
-        pos2(inner.left(), inner.top() + 16.0),
-        vec2(inner.width(), 22.0),
-    );
-    let name_response = text_field(
-        ui,
-        name_rect,
-        &mut state.name_buffers[index],
-        FIELD_BG,
-        TEXT,
-        FIELD_BORDER,
-    );
-    if name_response.changed()
-        && let Ok(mut names) = params.channel_names.lock()
-    {
-        names[index] = state.name_buffers[index].clone();
-    }
 
     // --- MIDI note indicator (from the loaded kit's midimap) ---
-    let note_y = name_rect.bottom() + 6.0;
+    let note_y = inner.top() + 30.0;
     if let Some(note_label) = midi_note_label(state, index) {
         ui.painter().text(
             pos2(center_x, note_y),
@@ -77,7 +58,7 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
     }
 
     // --- Solo / Mute ---
-    let button_y = name_rect.bottom() + 17.0;
+    let button_y = inner.top() + 55.0;
     let button_gap = 6.0;
     let button_width = (inner.width() - button_gap) / 2.0;
     let solo_rect = Rect::from_min_size(pos2(inner.left(), button_y), vec2(button_width, 24.0));
@@ -155,27 +136,6 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         pos2(inner.right(), inner.bottom()),
     );
     show_fader(ui, setter, &params.channels[index].fader, index, fader_rect);
-}
-
-/// A styled single-line text field with a custom background and border.
-fn text_field(
-    ui: &mut Ui,
-    rect: Rect,
-    buffer: &mut String,
-    bg: Color32,
-    text_color: Color32,
-    border: Color32,
-) -> egui::Response {
-    let text_edit = TextEdit::singleline(buffer)
-        .frame(egui::Frame::NONE)
-        .background_color(bg)
-        .text_color(text_color)
-        .font(FontId::proportional(10.0))
-        .margin(Margin::symmetric(6, 4));
-    let response = ui.put(rect, text_edit);
-    ui.painter()
-        .rect_stroke(rect, 4.0, Stroke::new(1.0, border), StrokeKind::Inside);
-    response
 }
 
 /// A small rounded toggle button drawn manually.
