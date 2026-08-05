@@ -126,7 +126,11 @@ fn mixdown_sums_kit_channels_into_both_stereo_sides() {
     mixdown_to_stereo(&scratch, 2, 3, &mut left, &mut right, &params.channels);
 
     // With default params (0 dB gain, center pan), both channels should sum equally
-    assert_eq!(left, vec![11.0, 22.0, 33.0]);
+    // but scaled by the 0.70710678 constant-power center pan law.
+    let sqrt2_2 = std::f32::consts::FRAC_1_SQRT_2;
+    assert!((left[0] - 11.0 * sqrt2_2).abs() < 1e-5);
+    assert!((left[1] - 22.0 * sqrt2_2).abs() < 1e-5);
+    assert!((left[2] - 33.0 * sqrt2_2).abs() < 1e-5);
     assert_eq!(right, left);
 }
 
@@ -155,4 +159,21 @@ fn mixdown_ramps_the_fader_smoother_on_automation() {
     assert!(left[0] < 1.0, "first step must move off unity: {:?}", left);
     assert!(left[2] > 0.5, "ramp must not reach target yet: {:?}", left);
     assert_eq!(right, left);
+}
+
+#[test]
+fn mixdown_applies_constant_power_pan_law() {
+    use dizmo::params::DizmoParams;
+
+    let scratch = vec![vec![1.0]];
+    let mut left = vec![0.0; 1];
+    let mut right = vec![0.0; 1];
+    let params = DizmoParams::default();
+
+    // Center pan (0.0): should apply -3dB (0.707) to both sides
+    params.channels[0].pan.smoothed.reset(0.0);
+    mixdown_to_stereo(&scratch, 1, 1, &mut left, &mut right, &params.channels);
+    assert!((left[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    assert!((right[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+
 }

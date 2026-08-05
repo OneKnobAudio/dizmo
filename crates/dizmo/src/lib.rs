@@ -157,12 +157,13 @@ pub fn mixdown_to_stereo(
             };
             let pan_pos = param.pan.value();
 
-            // Pan law: 3dB compensation
+            // Pan law: Constant power -3dB law
             // pan_pos: -1 (full left) to +1 (full right)
-            // At center (0): both channels get 1.0
+            // At center (0): both channels get 0.707 (-3dB)
             // At extremes: panned channel gets 1.0, opposite gets 0.0
-            let pan_left = (1.0 - pan_pos.max(0.0)).sqrt();
-            let pan_right = (1.0 + pan_pos.min(0.0)).sqrt();
+            let pan_angle = (pan_pos + 1.0) * std::f32::consts::FRAC_PI_4;
+            let pan_left = pan_angle.cos();
+            let pan_right = pan_angle.sin();
 
             left_sum += channel_data[sample] * gain_linear * pan_left;
             right_sum += channel_data[sample] * gain_linear * pan_right;
