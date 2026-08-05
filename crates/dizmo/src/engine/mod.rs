@@ -183,6 +183,11 @@ impl Engine {
         self.kit.channels.len()
     }
 
+    /// The kit's display name from drumkit.xml.
+    pub fn kit_name(&self) -> &str {
+        &self.kit.name
+    }
+
     /// The number of currently active voices (useful for debugging/tests).
     pub fn active_voices(&self) -> usize {
         self.voices.len()

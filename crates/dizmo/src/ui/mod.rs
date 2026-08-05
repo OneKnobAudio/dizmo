@@ -1,11 +1,13 @@
 //! The egui-based editor for DIZMO, matching `assets/MOCKUP.svg`.
 
+use crate::KitStatus;
 use crate::params::{DizmoParams, NUM_CHANNELS};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::prelude::*;
 use nice_plug_egui::{EguiNiceSettings, EguiState, create_egui_editor};
 use std::any::Any;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod channel_strip;
@@ -48,10 +50,21 @@ pub struct EditorState {
     /// where pan has no effect, so it is hidden there.
     pub show_pan: bool,
     pub name_buffers: Vec<String>,
+    /// Dispatches a kit load to the loader thread and returns immediately.
+    pub load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
+    /// Receives load results from the loader thread, polled each frame.
+    pub status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    /// What the header reports about the current kit.
+    pub load_status: LoadStatus,
 }
 
 impl EditorState {
-    pub fn new(params: Arc<DizmoParams>, show_pan: bool) -> Self {
+    pub fn new(
+        params: Arc<DizmoParams>,
+        show_pan: bool,
+        load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
+        status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    ) -> Self {
         let name_buffers = {
             let names = params.channel_names.lock().unwrap();
             names.to_vec()
@@ -60,8 +73,21 @@ impl EditorState {
             params,
             show_pan,
             name_buffers,
+            load_kit,
+            status_rx,
+            load_status: LoadStatus::Idle,
         }
     }
+}
+
+/// The kit-load state shown in the editor header.
+#[derive(Default)]
+pub enum LoadStatus {
+    #[default]
+    Idle,
+    Loading,
+    Loaded(String),
+    Failed(String),
 }
 
 /// The plugin editor: wraps the `nice-plug-egui` editor and hands it the parameter set.
@@ -70,9 +96,14 @@ pub struct DizmoEditor {
 }
 
 impl DizmoEditor {
-    pub fn new(params: Arc<DizmoParams>, show_pan: bool) -> Self {
+    pub fn new(
+        params: Arc<DizmoParams>,
+        show_pan: bool,
+        load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
+        status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    ) -> Self {
         let egui_state = params.editor_state.clone();
-        let editor_state = EditorState::new(params, show_pan);
+        let editor_state = EditorState::new(params, show_pan, load_kit, status_rx);
 
         let inner = create_egui_editor(
             egui_state,
@@ -93,7 +124,13 @@ impl DizmoEditor {
 
 impl Default for DizmoEditor {
     fn default() -> Self {
-        Self::new(Arc::new(DizmoParams::default()), true)
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        Self::new(
+            Arc::new(DizmoParams::default()),
+            true,
+            Arc::new(|_| {}),
+            Some(rx),
+        )
     }
 }
 
@@ -226,6 +263,8 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
         state,
         pos2(rect.left() + 210.0, header.top() + 10.0),
     );
+
+    draw_load_kit(ui, state, rect);
 }
 
 /// A compact drag value for the number of visible channel strips.
@@ -283,4 +322,66 @@ fn draw_strips_count(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState,
     );
     let _ = response
         .on_hover_text("Number of visible channel strips · drag to change, double-click to reset");
+}
+
+/// The kit load button and current kit status at the right end of the header.
+fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
+    // Poll the loader for finished loads.
+    if let Some(status_rx) = &state.status_rx {
+        while let Ok(status) = status_rx.try_recv() {
+            state.load_status = match status {
+                KitStatus::Loaded(name) => LoadStatus::Loaded(name),
+                KitStatus::Failed(message) => LoadStatus::Failed(message),
+            };
+        }
+    }
+
+    let center_y = rect.top() + HEADER_HEIGHT / 2.0;
+    let button = Rect::from_min_size(
+        pos2(rect.right() - 12.0 - 92.0, center_y - 11.0),
+        vec2(92.0, 22.0),
+    );
+
+    let (label, label_color) = match &state.load_status {
+        LoadStatus::Idle => ("NO KIT LOADED".to_string(), TEXT_DIM),
+        LoadStatus::Loading => ("LOADING…".to_string(), TEXT_DIM),
+        LoadStatus::Loaded(name) => (name.clone(), TEXT),
+        LoadStatus::Failed(message) => (message.clone(), MUTE_ACTIVE),
+    };
+    ui.painter().text(
+        pos2(button.left() - 10.0, center_y),
+        Align2::RIGHT_CENTER,
+        label,
+        FontId::proportional(9.0),
+        label_color,
+    );
+
+    let response = ui.interact(button, ui.id().with("dizmo-load-kit"), Sense::click());
+    let clicked = response.clicked();
+    let hovered = response.hovered();
+    ui.painter()
+        .rect_filled(button, 4.0, if hovered { FIELD_BG } else { TRACK_BG });
+    ui.painter().rect_stroke(
+        button,
+        4.0,
+        Stroke::new(1.0, if hovered { ACCENT } else { FIELD_BORDER }),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(
+        button.center(),
+        Align2::CENTER_CENTER,
+        "LOAD KIT",
+        FontId::proportional(10.0),
+        TEXT,
+    );
+    let _ = response.on_hover_text("Load a DrumGizmo kit (drumkit.xml)");
+
+    if clicked
+        && let Some(path) = rfd::FileDialog::new()
+            .add_filter("DrumGizmo kit", &["xml"])
+            .pick_file()
+    {
+        state.load_status = LoadStatus::Loading;
+        (state.load_kit)(path);
+    }
 }

@@ -10,6 +10,8 @@ egui = "0.35"
 roxmltree = "0.20"
 thiserror = "2"
 hound = "3.5"
+crossbeam-channel = "0.5"
+rfd = "0.15"
 
 [lib]
 crate-type = ["cdylib", "lib"]

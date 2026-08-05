@@ -1,7 +1,8 @@
 use nice_plug::prelude::*;
 use std::num::NonZeroU32;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::engine::Engine;
 use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, ChannelParams, DizmoParams, NUM_CHANNELS};
@@ -10,6 +11,19 @@ pub mod engine;
 pub mod kit;
 pub mod params;
 mod ui;
+
+/// A kit-load request dispatched from the editor GUI.
+pub enum LoadTask {
+    LoadKit { path: PathBuf },
+}
+
+/// Load status messages sent from the loader thread to the editor GUI.
+pub(crate) enum KitStatus {
+    /// The kit was loaded; carries its display name from drumkit.xml.
+    Loaded(String),
+    /// The kit failed to load; carries the error message.
+    Failed(String),
+}
 
 /// The audio-thread state shared by both plugin variants: the loaded engine and
 /// the reusable per-kit-channel scratch buffers. Everything here is mutated off
@@ -21,6 +35,14 @@ struct AudioCore {
     /// block size in `initialize` so process never allocates.
     scratch: Vec<Vec<f32>>,
     sample_rate: f32,
+    /// Receives fully-loaded engines from the loader thread.
+    engine_rx: Option<crossbeam_channel::Receiver<Result<Engine, String>>>,
+    /// Retired engines are sent here so they get dropped off the audio thread.
+    old_engine_tx: Option<crossbeam_channel::Sender<Engine>>,
+    /// Receives load status messages; moved into the editor when it is created.
+    status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    /// The sample rate the loader thread resamples to; set in `initialize`.
+    host_sample_rate: Arc<AtomicU32>,
 }
 
 impl AudioCore {
@@ -29,13 +51,39 @@ impl AudioCore {
             engine: None,
             scratch: Vec::new(),
             sample_rate: 44100.0,
+            engine_rx: None,
+            old_engine_tx: None,
+            status_rx: None,
+            host_sample_rate: Arc::new(AtomicU32::new(0)),
         }
     }
 
     fn set_sample_rate(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
+        self.host_sample_rate
+            .store(sample_rate as u32, Ordering::Relaxed);
         if let Some(engine) = self.engine.as_mut() {
             engine.set_sample_rate(sample_rate);
+        }
+    }
+
+    /// Installs engines finished by the loader thread, retiring the previous
+    /// engine off the audio thread. Called at the top of every process block;
+    /// never blocks or allocates.
+    fn check_engine_updates(&mut self) {
+        let Some(engine_rx) = &self.engine_rx else {
+            return;
+        };
+        while let Ok(loaded) = engine_rx.try_recv() {
+            if let Ok(engine) = loaded
+                && let Some(old) = self.engine.replace(engine)
+            {
+                // The loader thread always sets `old_engine_tx` alongside
+                // `engine_rx`, so this is only `None` when no load can happen.
+                if let Some(tx) = &self.old_engine_tx {
+                    let _ = tx.send(old);
+                }
+            }
         }
     }
 
@@ -187,17 +235,65 @@ macro_rules! impl_dizmo_plugin {
             const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
             type SysExMessage = ();
-            type BackgroundTask = ();
+            type BackgroundTask = LoadTask;
 
             fn params(&self) -> Arc<dyn Params> {
                 self.params.clone()
             }
 
-            fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+            fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+                let load_kit: Arc<dyn Fn(PathBuf) + Send + Sync> = Arc::new(move |path| {
+                    async_executor.execute_background(LoadTask::LoadKit { path });
+                });
+                let status_rx = self.core.status_rx.take();
                 Some(Box::new(ui::DizmoEditor::new(
                     self.params.clone(),
                     $show_pan,
+                    load_kit,
+                    status_rx,
                 )))
+            }
+
+            fn task_executor(&mut self) -> TaskExecutor<Self> {
+                let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
+                let (old_engine_tx, old_engine_rx) = crossbeam_channel::unbounded();
+                let (status_tx, status_rx) = crossbeam_channel::unbounded();
+                self.core.engine_rx = Some(engine_rx);
+                self.core.old_engine_tx = Some(old_engine_tx);
+                self.core.status_rx = Some(status_rx);
+
+                // A dedicated thread drops retired engines so deallocation never
+                // happens on the audio thread.
+                std::thread::spawn(move || {
+                    while let Ok(engine) = old_engine_rx.recv() {
+                        drop(engine);
+                    }
+                });
+
+                let host_sample_rate = self.core.host_sample_rate.clone();
+                Box::new(move |task: LoadTask| {
+                    let LoadTask::LoadKit { path } = task;
+                    let engine_tx = engine_tx.clone();
+                    let status_tx = status_tx.clone();
+                    let host_sample_rate = host_sample_rate.clone();
+                    std::thread::spawn(move || {
+                        let rate = host_sample_rate.load(Ordering::Relaxed);
+                        let mut engine =
+                            match engine::load_engine(&path, (rate != 0).then_some(rate)) {
+                                Ok(engine) => engine,
+                                Err(err) => {
+                                    let message = err.to_string();
+                                    let _ = engine_tx.send(Err(message.clone()));
+                                    let _ = status_tx.send(KitStatus::Failed(message));
+                                    return;
+                                }
+                            };
+                        engine.set_sample_rate(if rate == 0 { 44100.0 } else { rate as f32 });
+                        let name = engine.kit_name().to_string();
+                        let _ = engine_tx.send(Ok(engine));
+                        let _ = status_tx.send(KitStatus::Loaded(name));
+                    });
+                })
             }
 
             fn initialize(
@@ -281,6 +377,8 @@ impl DizmoPlugin {
     ) -> ProcessStatus {
         let frames = buffer.samples();
 
+        self.core.check_engine_updates();
+
         for channel_samples in buffer.iter_samples() {
             for sample in channel_samples {
                 *sample = 0.0;
@@ -358,6 +456,8 @@ impl DizmoMultiPlugin {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let frames = aux.outputs.first().map_or(0, |output| output.samples());
+
+        self.core.check_engine_updates();
 
         for output in aux.outputs.iter_mut() {
             for channel_samples in output.iter_samples() {
@@ -455,3 +555,77 @@ impl DizmoMultiPlugin {
 
 nice_export_clap!(DizmoPlugin, DizmoMultiPlugin);
 nice_export_vst3!(DizmoPlugin, DizmoMultiPlugin);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    const DRUMKIT: &str = r#"<drumkit version="2.0">
+  <metadata>
+    <title>Async Load Kit</title>
+    <defaultmidimap src="midimap.xml"/>
+  </metadata>
+  <channels>
+    <channel name="Kick"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+
+    const INST: &str = r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="Kick" file="kick.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>
+"#;
+
+    const MIDIMAP: &str = r#"<midimap>
+  <map note="36" instr="Kick"/>
+</midimap>
+"#;
+
+    #[test]
+    fn loader_thread_loads_kit_asynchronously() {
+        let dir = std::env::temp_dir().join("dizmo-async-load");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("drumkit.xml"), DRUMKIT).unwrap();
+        std::fs::write(dir.join("inst_kick.xml"), INST).unwrap();
+        std::fs::write(dir.join("midimap.xml"), MIDIMAP).unwrap();
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(dir.join("kick.wav"), spec).unwrap();
+        writer.write_sample(0i16).unwrap();
+        writer.finalize().unwrap();
+
+        let mut plugin = DizmoPlugin::default();
+        plugin.core.host_sample_rate.store(48000, Ordering::Relaxed);
+        let executor = plugin.task_executor();
+        executor(LoadTask::LoadKit {
+            path: dir.join("drumkit.xml"),
+        });
+
+        let engine = plugin
+            .core
+            .engine_rx
+            .as_ref()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .expect("loader thread should finish")
+            .expect("kit should load");
+        assert_eq!(engine.kit_name(), "Async Load Kit");
+        assert_eq!(engine.kit_channels(), 1);
+    }
+}
