@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::kit::{Kit, KitError, MidiMap, SampleBank, SampleError, load_samples};
+use crate::kit::{Kit, KitError, MidiMap, SampleBank, SampleError, load_samples_with_progress};
 
 /// Maximum number of simultaneously playing voices; the oldest is dropped
 /// first when exceeded.
@@ -188,6 +188,31 @@ impl Engine {
         &self.kit.name
     }
 
+    /// The MIDI notes from the midimap that trigger sound on each kit channel,
+    /// indexed by channel and sorted ascending. Computed once at load time and
+    /// shown in the editor strips.
+    pub fn notes_per_channel(&self) -> Vec<Vec<u8>> {
+        let mut per_channel = vec![Vec::new(); self.kit.channels.len()];
+        for entry in &self.midimap.entries {
+            let Some(&instrument_index) = self.instrument_index.get(&entry.instrument) else {
+                continue;
+            };
+            let instrument = &self.kit.instruments[instrument_index];
+            for map in &instrument.channel_map {
+                let Some(&output) = self.output_index.get(&map.out_name) else {
+                    continue;
+                };
+                if !per_channel[output].contains(&entry.note) {
+                    per_channel[output].push(entry.note);
+                }
+            }
+        }
+        for notes in &mut per_channel {
+            notes.sort_unstable();
+        }
+        per_channel
+    }
+
     /// The number of currently active voices (useful for debugging/tests).
     pub fn active_voices(&self) -> usize {
         self.voices.len()
@@ -334,11 +359,28 @@ pub fn load_engine(
     kit_path: impl AsRef<Path>,
     target_sample_rate: Option<u32>,
 ) -> Result<Engine, EngineLoadError> {
+    load_engine_with_progress(kit_path, target_sample_rate, &mut |_, _| {})
+}
+
+/// Like [`load_engine`], but reports decoding progress via `progress(loaded, total)`.
+pub fn load_engine_with_progress(
+    kit_path: impl AsRef<Path>,
+    target_sample_rate: Option<u32>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Engine, EngineLoadError> {
     let kit = Arc::new(Kit::load(kit_path)?);
-    let midimap = match &kit.default_midimap {
-        Some(name) => kit.load_midimap(name)?,
-        None => MidiMap::default(),
-    };
-    let bank = Arc::new(load_samples(&kit, target_sample_rate)?);
+    // The default midimap (declared or convention-detected) is best-effort:
+    // the convention spelling is tried first, then the same name with the
+    // leading "midimap" in the other case. A missing file leaves the kit
+    // unmapped instead of failing the whole load, matching DrumGizmo. Parse
+    // errors are still fatal.
+    let midimap = kit
+        .load_midimap_candidates(&kit.default_midimap_candidates())?
+        .unwrap_or_default();
+    let bank = Arc::new(load_samples_with_progress(
+        &kit,
+        target_sample_rate,
+        progress,
+    )?);
     Ok(Engine::new(kit, bank, midimap))
 }

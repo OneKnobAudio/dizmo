@@ -19,10 +19,24 @@ pub enum LoadTask {
 
 /// Load status messages sent from the loader thread to the editor GUI.
 pub(crate) enum KitStatus {
-    /// The kit was loaded; carries its display name from drumkit.xml.
-    Loaded(String),
+    /// The kit was loaded; carries its display name from drumkit.xml and, per
+    /// kit channel, the MIDI notes from the midimap that trigger sound on it.
+    Loaded { name: String, notes: Vec<Vec<u8>> },
     /// The kit failed to load; carries the error message.
     Failed(String),
+    /// Decoding progress, as `(files_decoded, total_files)`.
+    Progress { loaded: usize, total: usize },
+}
+
+/// Extracts the panic message from a caught panic payload, if it has one.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 /// The audio-thread state shared by both plugin variants: the loaded engine and
@@ -129,8 +143,13 @@ pub fn mixdown_to_stereo(
                 continue;
             }
 
-            // Fader is stored as linear gain (not dB)
-            let gain_linear = param.fader.value();
+            // Fader is stored as linear gain (not dB); step the smoother once
+            // per sample so automation ramps instead of zipper-stepping.
+            let gain_linear = if param.fader.smoothed.is_smoothing() {
+                param.fader.smoothed.next()
+            } else {
+                param.fader.value()
+            };
             let pan_pos = param.pan.value();
 
             // Pan law: 3dB compensation
@@ -278,20 +297,43 @@ macro_rules! impl_dizmo_plugin {
                     let host_sample_rate = host_sample_rate.clone();
                     std::thread::spawn(move || {
                         let rate = host_sample_rate.load(Ordering::Relaxed);
-                        let mut engine =
-                            match engine::load_engine(&path, (rate != 0).then_some(rate)) {
-                                Ok(engine) => engine,
-                                Err(err) => {
-                                    let message = err.to_string();
-                                    let _ = engine_tx.send(Err(message.clone()));
-                                    let _ = status_tx.send(KitStatus::Failed(message));
-                                    return;
-                                }
-                            };
-                        engine.set_sample_rate(if rate == 0 { 44100.0 } else { rate as f32 });
-                        let name = engine.kit_name().to_string();
-                        let _ = engine_tx.send(Ok(engine));
-                        let _ = status_tx.send(KitStatus::Loaded(name));
+                        eprintln!("[dizmo] loading kit '{path:?}' (rate {rate})");
+                        let start = std::time::Instant::now();
+                        let load = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            engine::load_engine_with_progress(
+                                &path,
+                                (rate != 0).then_some(rate),
+                                &mut |loaded, total| {
+                                    let _ = status_tx.send(KitStatus::Progress { loaded, total });
+                                },
+                            )
+                        }));
+                        match load {
+                            Ok(Ok(mut engine)) => {
+                                engine.set_sample_rate(if rate == 0 {
+                                    44100.0
+                                } else {
+                                    rate as f32
+                                });
+                                let name = engine.kit_name().to_string();
+                                eprintln!("[dizmo] kit '{name}' loaded in {:?}", start.elapsed());
+                                let notes = engine.notes_per_channel();
+                                let _ = engine_tx.send(Ok(engine));
+                                let _ = status_tx.send(KitStatus::Loaded { name, notes });
+                            }
+                            Ok(Err(err)) => {
+                                let message = err.to_string();
+                                eprintln!("[dizmo] failed to load kit: {message}");
+                                let _ = engine_tx.send(Err(message.clone()));
+                                let _ = status_tx.send(KitStatus::Failed(message));
+                            }
+                            Err(payload) => {
+                                let message = panic_message(&payload);
+                                eprintln!("[dizmo] kit loader thread panicked: {message}");
+                                let _ = engine_tx.send(Err(message.clone()));
+                                let _ = status_tx.send(KitStatus::Failed(message));
+                            }
+                        }
                     });
                 })
             }
@@ -541,11 +583,16 @@ impl DizmoMultiPlugin {
                 continue;
             }
 
-            // Fader is stored as linear gain (not dB), no pan in multi mode
-            let gain_linear = param.fader.value();
-
+            // Fader is stored as linear gain (not dB), no pan in multi mode;
+            // step the smoother once per sample so automation ramps instead of
+            // zipper-stepping.
             for (sample_idx, sample) in source.iter().enumerate() {
-                destination[sample_idx] = sample * gain_linear;
+                let gain = if param.fader.smoothed.is_smoothing() {
+                    param.fader.smoothed.next()
+                } else {
+                    param.fader.value()
+                };
+                destination[sample_idx] = sample * gain;
             }
         }
 

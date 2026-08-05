@@ -66,7 +66,18 @@ impl SampleBank {
 /// Returns the first error encountered (missing file, malformed WAV, or a
 /// `filechannel` outside the file's channel count).
 pub fn load_samples(kit: &Kit, target_sample_rate: Option<u32>) -> Result<SampleBank, SampleError> {
+    load_samples_with_progress(kit, target_sample_rate, &mut |_, _| {})
+}
+
+/// Like [`load_samples`], but reports decoding progress via `progress(loaded, total)`.
+pub fn load_samples_with_progress(
+    kit: &Kit,
+    target_sample_rate: Option<u32>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<SampleBank, SampleError> {
+    let total = unique_file_count(kit);
     let mut files = HashMap::new();
+    let mut loaded = 0;
 
     for instrument in &kit.instruments {
         for sample in &instrument.samples {
@@ -86,11 +97,29 @@ pub fn load_samples(kit: &Kit, target_sample_rate: Option<u32>) -> Result<Sample
                     });
                 }
                 files.insert(path, Arc::new(decoded));
+                loaded += 1;
+                progress(loaded, total);
             }
         }
     }
 
     Ok(SampleBank { files })
+}
+
+/// The number of unique sample files referenced by `kit`, in load order.
+fn unique_file_count(kit: &Kit) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let mut count = 0;
+    for instrument in &kit.instruments {
+        for sample in &instrument.samples {
+            for audio in &sample.audio_files {
+                if seen.insert(instrument.base_dir.join(&audio.file)) {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 fn decode_file(path: &Path, target_sample_rate: Option<u32>) -> Result<DecodedFile, SampleError> {

@@ -1,4 +1,4 @@
-use dizmo::kit::{Kit, SampleError, load_samples};
+use dizmo::kit::{Kit, SampleError, load_samples, load_samples_with_progress};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -293,4 +293,34 @@ fn resampling_all_channels_of_a_stereo_file() {
     assert_eq!(file.frames(), 2);
     assert!(approx(1000.0 / 32768.0, file.channels[0][0]));
     assert!(approx(-1000.0 / 32768.0, file.channels[1][0]));
+}
+
+#[test]
+fn reports_decoding_progress() {
+    let dir = write_kit(
+        "progress",
+        r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="Kick" file="kick.wav" filechannel="1"/>
+      <audiofile channel="Kick" file="snare.wav" filechannel="1"/>
+    </sample>
+    <sample name="Kick-2" power="0.2">
+      <audiofile channel="Kick" file="kick.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>"#,
+        &[("kick.wav", 1, &[100, 200]), ("snare.wav", 1, &[300, 400])],
+    );
+
+    let kit = Kit::load(dir.join("drumkit.xml")).unwrap();
+    let mut updates = Vec::new();
+    let bank = load_samples_with_progress(&kit, None, &mut |loaded, total| {
+        updates.push((loaded, total));
+    })
+    .unwrap();
+
+    assert_eq!(bank.len(), 2);
+    // The shared file is counted once; progress counts decoded files.
+    assert_eq!(updates, vec![(1, 2), (2, 2)]);
 }

@@ -1,8 +1,8 @@
 use crate::ui::fader::show_fader;
 use crate::ui::knob::{KNOB_RADIUS, show_knob};
 use crate::ui::{
-    CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, MUTE_ACTIVE, SOLO_ACTIVE, TEXT,
-    TEXT_DIM,
+    CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, LoadStatus, MUTE_ACTIVE,
+    SOLO_ACTIVE, TEXT, TEXT_DIM,
 };
 use egui::{
     Align2, Color32, FontId, Margin, Rect, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
@@ -63,8 +63,20 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         names[index] = state.name_buffers[index].clone();
     }
 
+    // --- MIDI note indicator (from the loaded kit's midimap) ---
+    let note_y = name_rect.bottom() + 6.0;
+    if let Some(note_label) = midi_note_label(state, index) {
+        ui.painter().text(
+            pos2(center_x, note_y),
+            Align2::CENTER_CENTER,
+            note_label,
+            FontId::proportional(9.0),
+            TEXT_DIM,
+        );
+    }
+
     // --- Solo / Mute ---
-    let button_y = name_rect.bottom() + 6.0;
+    let button_y = name_rect.bottom() + 17.0;
     let button_gap = 6.0;
     let button_width = (inner.width() - button_gap) / 2.0;
     let solo_rect = Rect::from_min_size(pos2(inner.left(), button_y), vec2(button_width, 24.0));
@@ -201,4 +213,24 @@ fn toggle_bool(setter: &ParamSetter, param: &BoolParam) {
     setter.begin_set_parameter(param);
     setter.set_parameter(param, !param.value());
     setter.end_set_parameter(param);
+}
+
+/// The MIDI note number(s) mapped to this channel by the loaded midimap, as a
+/// compact "36" or "36 38" label; `None` when no kit is loaded or the channel
+/// is unmapped.
+fn midi_note_label(state: &EditorState, index: usize) -> Option<String> {
+    let notes = match &state.load_status {
+        LoadStatus::Loaded { notes, .. } => notes.get(index)?,
+        _ => return None,
+    };
+    if notes.is_empty() {
+        return None;
+    }
+    Some(
+        notes
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }

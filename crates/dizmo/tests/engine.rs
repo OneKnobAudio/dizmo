@@ -130,6 +130,66 @@ fn plays_sample_into_its_output_channel() {
     assert_eq!(engine.active_voices(), 0);
 }
 
+const TWO_CHANNEL_DRUMKIT: &str = r#"<drumkit version="2.0">
+  <metadata>
+    <title>Two Channel Kit</title>
+    <defaultmidimap src="midimap.xml"/>
+  </metadata>
+  <channels>
+    <channel name="Kick"/>
+    <channel name="Snare"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+    </instrument>
+    <instrument name="Snare" file="inst_snare.xml">
+      <channelmap in="Snare" out="Snare" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+
+const INST_SNARE: &str = r#"<instrument version="2.0" name="Snare">
+  <samples>
+    <sample name="Snare-1" power="0.1">
+      <audiofile channel="Snare" file="snare.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>
+"#;
+
+const TWO_CHANNEL_MIDIMAP: &str = r#"<midimap>
+  <map note="35" instr="Kick"/>
+  <map note="36" instr="Kick"/>
+  <map note="38" instr="Snare"/>
+</midimap>
+"#;
+
+#[test]
+fn maps_midi_notes_to_their_output_channels() {
+    let dir = setup(
+        "notes-per-channel",
+        TWO_CHANNEL_DRUMKIT,
+        &[
+            ("inst_kick.xml", INST_KICK),
+            ("inst_snare.xml", INST_SNARE),
+            ("midimap.xml", TWO_CHANNEL_MIDIMAP),
+        ],
+        &[
+            ("kick.wav", 1, &[1000, 2000]),
+            ("snare.wav", 1, &[4000, 5000]),
+        ],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let engine = Engine::new(kit, bank, midimap);
+
+    // Note 36 and 35 both trigger the Kick; note 38 the Snare.
+    assert_eq!(engine.notes_per_channel(), vec![vec![35, 36], vec![38]]);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn selects_velocity_layer_by_power() {
     let dir = setup(
@@ -440,4 +500,101 @@ fn split_block_rendering_matches_contiguous_rendering() {
             "frame {index}: {expected} != {actual}"
         );
     }
+}
+
+/// A drumkit without a declared `<defaultmidimap>`.
+const CONVENTION_DRUMKIT: &str = r#"<drumkit version="2.0">
+  <metadata><title>Convention Kit</title></metadata>
+  <channels><channel name="Kick"/></channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+
+#[test]
+fn load_engine_picks_up_convention_midimap() {
+    // `TestKit_2.xml` + `Midimap_2.xml`: the midimap is detected from the kit
+    // filename variation and applied, so note 36 plays the Kick.
+    let dir = std::env::temp_dir().join("dizmo-engine-convention-midimap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_file(&dir, "TestKit_2.xml", CONVENTION_DRUMKIT);
+    write_file(&dir, "inst_kick.xml", INST_KICK);
+    write_file(&dir, "Midimap_2.xml", MIDIMAP);
+    write_wavs(&dir, &[("kick.wav", 1, &[1000, 2000, 3000])]);
+
+    let mut engine = load_engine(dir.join("TestKit_2.xml"), None).unwrap();
+    engine.note_on(36, 127);
+    assert_eq!(engine.active_voices(), 1);
+
+    let out = run(&mut engine, 1, 3);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn load_engine_picks_up_lowercase_convention_midimap() {
+    // `TestKit_4.xml` pairs with `Midimap_4.xml` by convention, but the kit
+    // ships the midimap lowercase (`midimap_4.xml`); the case fallback must
+    // still map note 36.
+    let dir = std::env::temp_dir().join("dizmo-engine-lowercase-midimap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_file(&dir, "TestKit_4.xml", CONVENTION_DRUMKIT);
+    write_file(&dir, "inst_kick.xml", INST_KICK);
+    write_file(&dir, "midimap_4.xml", MIDIMAP);
+    write_wavs(&dir, &[("kick.wav", 1, &[1000, 2000, 3000])]);
+
+    let mut engine = load_engine(dir.join("TestKit_4.xml"), None).unwrap();
+    engine.note_on(36, 127);
+    assert_eq!(engine.active_voices(), 1);
+
+    let out = run(&mut engine, 1, 3);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn load_engine_tolerates_missing_convention_midimap() {
+    // `TestKit_3.xml` with no `Midimap_3.xml`: the kit still loads, just
+    // unmapped, instead of failing the whole load.
+    let dir = std::env::temp_dir().join("dizmo-engine-missing-midimap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_file(&dir, "TestKit_3.xml", CONVENTION_DRUMKIT);
+    write_file(&dir, "inst_kick.xml", INST_KICK);
+    write_wavs(&dir, &[("kick.wav", 1, &[1000, 2000, 3000])]);
+
+    let mut engine = load_engine(dir.join("TestKit_3.xml"), None).unwrap();
+    engine.note_on(36, 127);
+    assert_eq!(engine.active_voices(), 0);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn load_engine_picks_up_plain_midimap_without_variation() {
+    // A kit without a variation (`drumkit.xml`) pairs with the plain
+    // `midimap.xml`, so note 36 plays the Kick.
+    let dir = std::env::temp_dir().join("dizmo-engine-plain-midimap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_file(&dir, "drumkit.xml", CONVENTION_DRUMKIT);
+    write_file(&dir, "inst_kick.xml", INST_KICK);
+    write_file(&dir, "midimap.xml", MIDIMAP);
+    write_wavs(&dir, &[("kick.wav", 1, &[1000, 2000, 3000])]);
+
+    let mut engine = load_engine(dir.join("drumkit.xml"), None).unwrap();
+    engine.note_on(36, 127);
+    assert_eq!(engine.active_voices(), 1);
+
+    let out = run(&mut engine, 1, 3);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+
+    std::fs::remove_dir_all(&dir).ok();
 }

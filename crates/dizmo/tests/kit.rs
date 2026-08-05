@@ -253,3 +253,89 @@ fn supports_old_drumkit_attributes() {
 
     std::fs::remove_dir_all(&kit_dir).ok();
 }
+
+/// A minimal instrument file, enough for `Kit::load` to succeed.
+const MINIMAL_INST: &str = r#"<instrument version="2.0" name="Kick">
+  <samples><sample name="K-1" power="0.1">
+    <audiofile channel="Kick" file="kick.wav" filechannel="1"/>
+  </sample></samples>
+</instrument>"#;
+
+/// Writes a minimal kit under `name` (no declared `defaultmidimap`) and loads it.
+fn load_minimal_kit(tag: &str, name: &str) -> Kit {
+    let dir = std::env::temp_dir().join(format!("dizmo-midimap-{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(name),
+        r#"<drumkit><instruments><instrument name="Kick" file="inst_kick.xml"/></instruments></drumkit>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("inst_kick.xml"), MINIMAL_INST).unwrap();
+    let kit = Kit::load(dir.join(name)).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    kit
+}
+
+#[test]
+fn detects_midimap_from_kit_filename_variation() {
+    let kit = load_minimal_kit("convention", "CrocellKit_full.xml");
+    assert_eq!(kit.default_midimap.as_deref(), Some("Midimap_full.xml"));
+}
+
+#[test]
+fn midimap_candidates_try_both_letter_cases() {
+    let kit = load_minimal_kit("candidates", "CrocellKit_full.xml");
+    assert_eq!(
+        kit.default_midimap_candidates(),
+        vec![
+            "Midimap_full.xml".to_string(),
+            "midimap_full.xml".to_string()
+        ]
+    );
+
+    let kit = load_minimal_kit("candidates-plain", "drumkit.xml");
+    assert_eq!(
+        kit.default_midimap_candidates(),
+        vec!["midimap.xml".to_string(), "Midimap.xml".to_string()]
+    );
+}
+
+#[test]
+fn detects_midimap_from_numeric_variation() {
+    let kit = load_minimal_kit("numeric", "Muldjord_2.xml");
+    assert_eq!(kit.default_midimap.as_deref(), Some("Midimap_2.xml"));
+}
+
+#[test]
+fn detects_plain_midimap_without_variation() {
+    let kit = load_minimal_kit("plain", "drumkit.xml");
+    assert_eq!(kit.default_midimap.as_deref(), Some("midimap.xml"));
+}
+
+#[test]
+fn does_not_detect_midimap_for_degenerate_underscore() {
+    let kit = load_minimal_kit("trailing", "Kit_.xml");
+    assert_eq!(kit.default_midimap, None);
+}
+
+#[test]
+fn explicit_defaultmidimap_wins_over_convention() {
+    let dir = std::env::temp_dir().join("dizmo-midimap-explicit");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SomeKit_7.xml"),
+        r#"<drumkit version="2.0">
+  <metadata><defaultmidimap src="custom.xml"/></metadata>
+  <instruments><instrument name="Kick" file="inst_kick.xml"/></instruments>
+</drumkit>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("inst_kick.xml"), MINIMAL_INST).unwrap();
+
+    let kit = Kit::load(dir.join("SomeKit_7.xml")).unwrap();
+    assert_eq!(kit.default_midimap.as_deref(), Some("custom.xml"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

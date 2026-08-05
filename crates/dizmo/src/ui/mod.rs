@@ -3,6 +3,7 @@
 use crate::KitStatus;
 use crate::params::{DizmoParams, NUM_CHANNELS};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui_file_dialog::FileDialog;
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::prelude::*;
 use nice_plug_egui::{EguiNiceSettings, EguiState, create_egui_editor};
@@ -56,6 +57,21 @@ pub struct EditorState {
     pub status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
     /// What the header reports about the current kit.
     pub load_status: LoadStatus,
+    /// The in-window kit picker.
+    pub file_dialog: FileDialog,
+}
+
+/// A `FileDialog` configured for picking a DrumGizmo `drumkit.xml`.
+fn kit_file_dialog() -> FileDialog {
+    FileDialog::new()
+        .id(egui::Id::new("dizmo-kit-picker"))
+        .title("Load DrumGizmo kit")
+        .add_file_filter_extensions("DrumGizmo kit", vec!["xml"])
+        .default_file_filter("DrumGizmo kit")
+        .as_modal(true)
+        .default_size(vec2(720.0, 480.0))
+        .min_size(vec2(480.0, 320.0))
+        .resizable(true)
 }
 
 impl EditorState {
@@ -76,6 +92,7 @@ impl EditorState {
             load_kit,
             status_rx,
             load_status: LoadStatus::Idle,
+            file_dialog: kit_file_dialog(),
         }
     }
 }
@@ -85,8 +102,15 @@ impl EditorState {
 pub enum LoadStatus {
     #[default]
     Idle,
-    Loading,
-    Loaded(String),
+    /// Decoding in progress, as `(files_decoded, total_files)`.
+    Loading {
+        loaded: usize,
+        total: usize,
+    },
+    Loaded {
+        name: String,
+        notes: Vec<Vec<u8>>,
+    },
     Failed(String),
 }
 
@@ -330,8 +354,9 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
     if let Some(status_rx) = &state.status_rx {
         while let Ok(status) = status_rx.try_recv() {
             state.load_status = match status {
-                KitStatus::Loaded(name) => LoadStatus::Loaded(name),
+                KitStatus::Loaded { name, notes } => LoadStatus::Loaded { name, notes },
                 KitStatus::Failed(message) => LoadStatus::Failed(message),
+                KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },
             };
         }
     }
@@ -342,18 +367,32 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
         vec2(92.0, 22.0),
     );
 
-    let (label, label_color) = match &state.load_status {
-        LoadStatus::Idle => ("NO KIT LOADED".to_string(), TEXT_DIM),
-        LoadStatus::Loading => ("LOADING…".to_string(), TEXT_DIM),
-        LoadStatus::Loaded(name) => (name.clone(), TEXT),
-        LoadStatus::Failed(message) => (message.clone(), MUTE_ACTIVE),
+    let (label, tooltip) = match &state.load_status {
+        LoadStatus::Idle => ("NO KIT LOADED".to_string(), None),
+        LoadStatus::Loading { loaded, total } => (
+            if *total > 0 {
+                format!("LOADING… ({loaded}/{total})")
+            } else {
+                "LOADING…".to_string()
+            },
+            None,
+        ),
+        LoadStatus::Loaded { name, .. } => (name.clone(), Some(name.clone())),
+        LoadStatus::Failed(message) => (message.clone(), Some(message.clone())),
     };
-    ui.painter().text(
-        pos2(button.left() - 10.0, center_y),
-        Align2::RIGHT_CENTER,
+    let label_color = match &state.load_status {
+        LoadStatus::Idle | LoadStatus::Loading { .. } => TEXT_DIM,
+        LoadStatus::Loaded { .. } => TEXT,
+        LoadStatus::Failed(_) => MUTE_ACTIVE,
+    };
+    draw_status_label(
+        ui,
         label,
         FontId::proportional(9.0),
         label_color,
+        button.left() - 10.0,
+        center_y,
+        tooltip,
     );
 
     let response = ui.interact(button, ui.id().with("dizmo-load-kit"), Sense::click());
@@ -376,12 +415,76 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
     );
     let _ = response.on_hover_text("Load a DrumGizmo kit (drumkit.xml)");
 
-    if clicked
-        && let Some(path) = rfd::FileDialog::new()
-            .add_filter("DrumGizmo kit", &["xml"])
-            .pick_file()
-    {
-        state.load_status = LoadStatus::Loading;
+    if clicked {
+        state.file_dialog.pick_file();
+    }
+
+    state.file_dialog.update(ui.ctx());
+    if let Some(path) = state.file_dialog.take_picked() {
+        state.load_status = LoadStatus::Loading {
+            loaded: 0,
+            total: 0,
+        };
         (state.load_kit)(path);
     }
+}
+
+/// Draws the kit status label, right-aligned ending at `right`, truncating it
+/// with an ellipsis if it would run into the DIZMO logo. When `tooltip` is
+/// set (loaded kit name or a load error) the full text is shown on hover.
+fn draw_status_label(
+    ui: &mut Ui,
+    text: String,
+    font_id: FontId,
+    color: Color32,
+    right: f32,
+    center_y: f32,
+    tooltip: Option<String>,
+) {
+    let max_width = (right - 170.0).max(120.0);
+    let text = truncate_to_width(ui, text, &font_id, max_width);
+    let galley = ui
+        .ctx()
+        .fonts_mut(|fonts| fonts.layout_no_wrap(text, font_id.clone(), color));
+    let (width, height) = (galley.size().x, galley.size().y);
+    ui.painter()
+        .galley(pos2(right - width, center_y - height / 2.0), galley, color);
+
+    if let Some(tooltip) = tooltip {
+        let label_rect = Rect::from_min_max(
+            pos2((right - width).max(0.0), center_y - 11.0),
+            pos2(right, center_y + 11.0),
+        );
+        let response = ui.interact(
+            label_rect,
+            ui.id().with("dizmo-load-status"),
+            Sense::hover(),
+        );
+        let _ = response.on_hover_text(tooltip);
+    }
+}
+
+/// Truncates `text` to `max_width` pixels, appending an ellipsis.
+fn truncate_to_width(ui: &Ui, text: String, font_id: &FontId, max_width: f32) -> String {
+    let fits = |candidate: &str| {
+        ui.ctx()
+            .fonts_mut(|fonts| {
+                fonts.layout_no_wrap(candidate.to_string(), font_id.clone(), Color32::WHITE)
+            })
+            .size()
+            .x
+            <= max_width
+    };
+    if fits(&text) {
+        return text;
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while chars.len() > 1 {
+        chars.pop();
+        let candidate: String = chars.iter().chain(std::iter::once(&'…')).collect();
+        if fits(&candidate) {
+            return candidate;
+        }
+    }
+    "…".to_string()
 }

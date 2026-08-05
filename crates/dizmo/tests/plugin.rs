@@ -129,3 +129,30 @@ fn mixdown_sums_kit_channels_into_both_stereo_sides() {
     assert_eq!(left, vec![11.0, 22.0, 33.0]);
     assert_eq!(right, left);
 }
+
+#[test]
+fn mixdown_ramps_the_fader_smoother_on_automation() {
+    use dizmo::params::DizmoParams;
+
+    let scratch = vec![vec![1.0, 1.0, 1.0]];
+    let mut left = vec![0.0; 3];
+    let mut right = vec![0.0; 3];
+    let params = DizmoParams::default();
+
+    // Model the host automating the fader from 0 dB (1.0) down to 0.5. The
+    // wrapper resets the smoother to the current value on activate, so do the
+    // same here before starting the ramp.
+    let fader = &params.channels[0].fader;
+    fader.smoothed.reset(1.0);
+    fader.smoothed.set_target(48000.0, 0.5);
+
+    mixdown_to_stereo(&scratch, 1, 3, &mut left, &mut right, &params.channels);
+
+    // Three samples into a 2400-step ramp: still near unity, strictly
+    // decreasing, and nowhere near the 0.5 target yet.
+    assert!(left[0] > left[1], "gains must ramp: {:?}", left);
+    assert!(left[1] > left[2], "gains must ramp: {:?}", left);
+    assert!(left[0] < 1.0, "first step must move off unity: {:?}", left);
+    assert!(left[2] > 0.5, "ramp must not reach target yet: {:?}", left);
+    assert_eq!(right, left);
+}

@@ -4,7 +4,11 @@
 //! https://www.drumgizmo.org/wiki/doku.php?id=documentation:file_formats):
 //!
 //! - A kit is described by a `drumkit.xml` that references one instrument XML
-//!   file per instrument, plus (optionally) a `midimap.xml`.
+//!   file per instrument, plus a default `midimap.xml`. The midimap is either
+//!   declared in the drumkit's metadata or detected from the kit filename via
+//!   the DrumGizmo convention: `<name>_<variation>.xml` pairs with
+//!   `Midimap_<variation>.xml`, and a kit without a variation pairs with
+//!   `midimap.xml`.
 //! - Instrument XML files define the sample hits. Version 2.0 instruments use a
 //!   `power` value per sample (velocity layering); version 1.0 instruments use
 //!   `<velocities>` groups instead.
@@ -28,7 +32,7 @@ pub use instrument::{
     AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
 };
 pub use midimap::{MidiMap, MidiMapEntry};
-pub use samples::{DecodedFile, SampleBank, SampleError, load_samples};
+pub use samples::{DecodedFile, SampleBank, SampleError, load_samples, load_samples_with_progress};
 
 /// The default sample rate used when a `drumkit.xml` does not declare one.
 pub const DEFAULT_SAMPLERATE: f64 = 44100.0;
@@ -126,7 +130,7 @@ impl Kit {
             root_dir,
             channels: drumkit.channels,
             instruments,
-            default_midimap: drumkit.default_midimap,
+            default_midimap: drumkit.default_midimap.or_else(|| detect_midimap(path)),
         })
     }
 
@@ -148,6 +152,75 @@ impl Kit {
         };
         midimap::parse_file(&resolved)
     }
+
+    /// The midimap filenames to try for the default midimap, most preferred
+    /// first: the conventional spelling, then the same name with the leading
+    /// "midimap" prefix in the other case (`Midimap_full.xml` ->
+    /// `midimap_full.xml`, and vice versa). Empty when no default midimap is
+    /// known.
+    pub fn default_midimap_candidates(&self) -> Vec<String> {
+        match &self.default_midimap {
+            Some(name) => midimap_case_variants(name),
+            None => Vec::new(),
+        }
+    }
+
+    /// Tries each midimap filename in order, returning the first one that
+    /// loads. A missing file (Io) is skipped; a parse error on an existing
+    /// file aborts with that error. Returns `None` when none of the
+    /// candidates exist.
+    pub fn load_midimap_candidates(
+        &self,
+        candidates: &[String],
+    ) -> Result<Option<MidiMap>, KitError> {
+        for name in candidates {
+            match self.load_midimap(name) {
+                Ok(map) => return Ok(Some(map)),
+                Err(KitError::Io { .. }) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Applies the DrumGizmo midimap naming convention: a kit file named
+/// `<name>_<variation>.xml` is paired with `Midimap_<variation>.xml` next to
+/// it (e.g. `CrocellKit_full.xml` -> `Midimap_full.xml`), while a kit without
+/// a variation pairs with the plain `midimap.xml`. Only used when the drumkit
+/// XML does not declare a `<defaultmidimap>`.
+fn detect_midimap(drumkit_path: &Path) -> Option<String> {
+    let stem = drumkit_path.file_stem()?.to_str()?;
+    match stem.rfind('_') {
+        Some(underscore) => {
+            let variation = &stem[underscore + 1..];
+            if variation.is_empty() {
+                None
+            } else {
+                Some(format!("Midimap_{variation}.xml"))
+            }
+        }
+        None => Some("midimap.xml".to_string()),
+    }
+}
+
+/// The conventional spelling plus the same name with the leading "midimap"
+/// prefix in the other case, deduplicated. Kits in the wild spell it both
+/// `Midimap_<variation>.xml` and `midimap_<variation>.xml`.
+fn midimap_case_variants(name: &str) -> Vec<String> {
+    let mut candidates = vec![name.to_string()];
+    if let Some(rest) = name.strip_prefix('M') {
+        let lower = format!("m{rest}");
+        if lower != name {
+            candidates.push(lower);
+        }
+    } else if let Some(rest) = name.strip_prefix('m') {
+        let upper = format!("M{rest}");
+        if upper != name {
+            candidates.push(upper);
+        }
+    }
+    candidates
 }
 
 /// A single output channel declared by the kit's `<channels>` node.

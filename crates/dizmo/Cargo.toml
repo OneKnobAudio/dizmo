@@ -7,11 +7,11 @@ edition.workspace = true
 nice-plug = "0.2.3"
 nice-plug-egui = { version = "0.3", features = ["opengl"] }
 egui = "0.35"
+egui-file-dialog = "0.14"
 roxmltree = "0.20"
 thiserror = "2"
 hound = "3.5"
 crossbeam-channel = "0.5"
-rfd = "0.15"
 
 [lib]
 crate-type = ["cdylib", "lib"]
