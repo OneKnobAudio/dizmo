@@ -102,7 +102,7 @@ fn load(dir: &Path) -> (Arc<Kit>, Arc<SampleBank>, MidiMap) {
 
 fn run(engine: &mut Engine, channels: usize, frames: usize) -> Vec<Vec<f32>> {
     let mut buffers: Vec<Vec<f32>> = vec![vec![0.0; frames]; channels];
-    engine.process(frames, &mut buffers);
+    engine.process(0, frames, &mut buffers);
     buffers
 }
 
@@ -299,6 +299,34 @@ fn retrigger_self_chokes_previous_voice() {
 }
 
 #[test]
+fn mid_block_retrigger_restarts_sample_from_beginning() {
+    let dir = setup(
+        "mid-block-retrigger",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000, 2000, 3000, 4000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+    let mut buffers = vec![vec![0.0; 8]; 1];
+
+    // First hit at frame 1: sample renders from s[0].
+    engine.process(0, 1, &mut buffers);
+    engine.note_on(36, 127);
+    engine.process(1, 2, &mut buffers);
+    assert!(approx(buffers[0][1], 1000.0 / 32768.0));
+    assert!(approx(buffers[0][2], 2000.0 / 32768.0));
+
+    // Retrigger at frame 4: must restart from s[0], not continue at s[2].
+    engine.process(3, 1, &mut buffers);
+    engine.note_on(36, 127);
+    engine.process(4, 2, &mut buffers);
+    assert!(approx(buffers[0][4], 1000.0 / 32768.0));
+    assert!(approx(buffers[0][5], 2000.0 / 32768.0));
+    assert_eq!(engine.active_voices(), 1);
+}
+
+#[test]
 fn ignores_unmapped_notes() {
     let dir = setup(
         "unmapped",
@@ -350,4 +378,66 @@ fn resampled_kit_plays_at_target_rate() {
     assert!(approx(out[0][1], 1000.0 / 32768.0));
     assert_eq!(out[0][2], 0.0);
     assert_eq!(engine.active_voices(), 0);
+}
+
+#[test]
+fn note_triggered_mid_block_renders_at_its_offset() {
+    let dir = setup(
+        "mid-block",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000, 2000, 3000, 4000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+
+    let mut buffers = vec![vec![0.0; 8]; 1];
+
+    // Pre-roll: nothing is ringing, the first 3 frames stay silent.
+    engine.process(0, 3, &mut buffers);
+    // The note arrives at frame 3 of this block.
+    engine.note_on(36, 127);
+    engine.process(3, 5, &mut buffers);
+
+    assert_eq!(buffers[0][0], 0.0);
+    assert_eq!(buffers[0][1], 0.0);
+    assert_eq!(buffers[0][2], 0.0);
+    // The sample starts exactly at the note's offset, not at the block start.
+    assert!(approx(buffers[0][3], 1000.0 / 32768.0));
+    assert!(approx(buffers[0][4], 2000.0 / 32768.0));
+    assert!(approx(buffers[0][5], 3000.0 / 32768.0));
+}
+
+#[test]
+fn split_block_rendering_matches_contiguous_rendering() {
+    let dir = setup(
+        "split",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000, 2000, 3000, 4000, 5000, 6000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut contiguous = Engine::new(Arc::clone(&kit), Arc::clone(&bank), midimap.clone());
+    let mut split = Engine::new(kit, bank, midimap);
+
+    // Contiguous: the note plays from frame 0 of a single block.
+    contiguous.note_on(36, 127);
+    let mut out_a = vec![vec![0.0; 6]; 1];
+    contiguous.process(0, 6, &mut out_a);
+
+    // Split: the note arrives at frame 2 and is rendered as sub-blocks.
+    let mut out_b = vec![vec![0.0; 6]; 1];
+    split.process(0, 2, &mut out_b);
+    split.note_on(36, 127);
+    split.process(2, 2, &mut out_b);
+    split.process(4, 2, &mut out_b);
+
+    assert_eq!(out_b[0][0], 0.0);
+    assert_eq!(out_b[0][1], 0.0);
+    for (index, (expected, actual)) in out_a[0].iter().zip(&out_b[0][2..]).enumerate() {
+        assert!(
+            approx(*expected, *actual),
+            "frame {index}: {expected} != {actual}"
+        );
+    }
 }

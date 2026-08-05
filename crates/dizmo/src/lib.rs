@@ -293,7 +293,24 @@ impl DizmoPlugin {
             return ProcessStatus::Normal;
         };
 
+        if !ready {
+            while context.next_event().is_some() {}
+            return ProcessStatus::Normal;
+        }
+
+        for channel in &mut self.core.scratch {
+            channel[..frames].fill(0.0);
+        }
+
+        let mut current_frame = 0;
         while let Some(event) = context.next_event() {
+            let timing = event.timing() as usize;
+            if timing > current_frame {
+                let chunk = (timing - current_frame).min(frames - current_frame);
+                engine.process(current_frame, chunk, &mut self.core.scratch);
+                current_frame += chunk;
+            }
+
             match event {
                 NoteEvent::NoteOn { note, velocity, .. } => {
                     engine.note_on(note, (velocity * 127.0).round() as u8);
@@ -308,11 +325,13 @@ impl DizmoPlugin {
             }
         }
 
-        if !ready {
-            return ProcessStatus::Normal;
+        if current_frame < frames {
+            engine.process(
+                current_frame,
+                frames - current_frame,
+                &mut self.core.scratch,
+            );
         }
-
-        engine.process(frames, &mut self.core.scratch);
 
         let slices = buffer.as_slice();
         let (left_rest, right_rest) = slices.split_at_mut(1);
@@ -354,7 +373,24 @@ impl DizmoMultiPlugin {
             return ProcessStatus::Normal;
         };
 
+        if !ready {
+            while context.next_event().is_some() {}
+            return ProcessStatus::Normal;
+        }
+
+        for channel in &mut self.core.scratch {
+            channel[..frames].fill(0.0);
+        }
+
+        let mut current_frame = 0;
         while let Some(event) = context.next_event() {
+            let timing = event.timing() as usize;
+            if timing > current_frame {
+                let chunk = (timing - current_frame).min(frames - current_frame);
+                engine.process(current_frame, chunk, &mut self.core.scratch);
+                current_frame += chunk;
+            }
+
             match event {
                 NoteEvent::NoteOn { note, velocity, .. } => {
                     engine.note_on(note, (velocity * 127.0).round() as u8);
@@ -369,11 +405,13 @@ impl DizmoMultiPlugin {
             }
         }
 
-        if !ready {
-            return ProcessStatus::Normal;
+        if current_frame < frames {
+            engine.process(
+                current_frame,
+                frames - current_frame,
+                &mut self.core.scratch,
+            );
         }
-
-        engine.process(frames, &mut self.core.scratch);
 
         // Determine if any channel is soloed
         let any_soloed = self

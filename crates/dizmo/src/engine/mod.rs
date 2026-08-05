@@ -133,12 +133,13 @@ impl Engine {
         self.voices.clear();
     }
 
-    /// Mixes all voices into `out`, one mono `Vec` per kit channel. Each buffer
-    /// must be at least `frames` samples long; only the first `frames` samples
-    /// are written. No allocations happen here.
-    pub fn process(&mut self, frames: usize, out: &mut [Vec<f32>]) {
-        for buffer in out.iter_mut() {
-            buffer[..frames].fill(0.0);
+    /// Mixes all voices into `out`, one mono `Vec` per kit channel. The buffers
+    /// must be at least `offset + frames` samples long; only `frames` samples
+    /// starting at `offset` are written. The caller is responsible for clearing
+    /// the buffers before processing a block. No allocations happen here.
+    pub fn process(&mut self, offset: usize, frames: usize, out: &mut [Vec<f32>]) {
+        if frames == 0 {
+            return;
         }
 
         for voice in &mut self.voices {
@@ -160,7 +161,7 @@ impl Engine {
                 let out_buffer = &mut out[stream.output];
                 for (frame, &value) in data[start..read_to].iter().enumerate() {
                     let gain = (gain_start + gain_step * frame as f32).max(0.0);
-                    out_buffer[frame] += value * gain;
+                    out_buffer[offset + frame] += value * gain;
                 }
             }
 
