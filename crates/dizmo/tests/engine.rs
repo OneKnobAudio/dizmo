@@ -374,6 +374,60 @@ fn choke_fades_target_over_choketime() {
 }
 
 #[test]
+fn triggering_a_note_marks_its_output_channels() {
+    let dir = setup(
+        "triggers",
+        TWO_CHANNEL_DRUMKIT,
+        &[
+            ("inst_kick.xml", INST_KICK),
+            ("inst_snare.xml", INST_SNARE),
+            ("midimap.xml", TWO_CHANNEL_MIDIMAP),
+        ],
+        &[("kick.wav", 1, &[1000]), ("snare.wav", 1, &[1000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+
+    engine.note_on(36, 127); // Kick -> output channel 0
+    assert_eq!(engine.take_triggered(), 0b0001);
+
+    engine.note_on(38, 127); // Snare -> output channel 1
+    assert_eq!(engine.take_triggered(), 0b0010);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn simultaneous_notes_mark_all_their_channels_at_once() {
+    let dir = setup(
+        "simultaneous-triggers",
+        TWO_CHANNEL_DRUMKIT,
+        &[
+            ("inst_kick.xml", INST_KICK),
+            ("inst_snare.xml", INST_SNARE),
+            ("midimap.xml", TWO_CHANNEL_MIDIMAP),
+        ],
+        &[("kick.wav", 1, &[1000]), ("snare.wav", 1, &[1000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+
+    // Kick + Snare in the same block: both channel bits must be set, and a
+    // retrigger of the same channel must not clobber the others.
+    engine.note_on(36, 127);
+    engine.note_on(38, 127);
+    engine.note_on(38, 127);
+    assert_eq!(engine.take_triggered(), 0b0011);
+
+    // The mask is cleared by take_triggered, so a later lone note reports only
+    // its own channel.
+    engine.note_on(36, 127);
+    assert_eq!(engine.take_triggered(), 0b0001);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn retrigger_fades_previous_voice_instead_of_cutting() {
     let dir = setup(
         "retrigger",

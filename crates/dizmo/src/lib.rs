@@ -66,6 +66,10 @@ struct AudioCore {
     /// Per-channel linear peak levels (as `f32` bits), written here each block
     /// on the audio thread and shared with the editor for its signal LEDs.
     levels: Arc<[AtomicU32; NUM_CHANNELS]>,
+    /// Per-channel trigger activity (as `f32` bits): set to 1.0 when a note
+    /// routes a new voice to the channel, then decays each block. Shared with
+    /// the editor to animate its per-channel trigger indicators.
+    triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
 }
 
 impl AudioCore {
@@ -79,6 +83,7 @@ impl AudioCore {
             status_rx: None,
             host_sample_rate: Arc::new(AtomicU32::new(0)),
             levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+            triggers: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
         }
     }
 
@@ -137,6 +142,27 @@ impl AudioCore {
             let prev = f32::from_bits(level.load(Ordering::Relaxed));
             let next = peak.max(prev * decay);
             level.store(next.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Decays every per-channel trigger value so the editor's indicators fade
+    /// out after a hit.
+    fn decay_triggers(&self, frames: usize) {
+        let dt = frames as f32 / self.sample_rate;
+        let decay = (-dt / 0.3).exp();
+        for trigger in self.triggers.iter() {
+            let prev = f32::from_bits(trigger.load(Ordering::Relaxed));
+            trigger.store((prev * decay).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Sets the channels in `mask` (kit-channel bitmask from the engine) to
+    /// full trigger brightness.
+    fn mark_triggered(&self, mask: u16) {
+        for index in 0..NUM_CHANNELS {
+            if mask & (1 << index) != 0 {
+                self.triggers[index].store(1.0f32.to_bits(), Ordering::Relaxed);
+            }
         }
     }
 }
@@ -294,12 +320,14 @@ macro_rules! impl_dizmo_plugin {
                 });
                 let status_rx = self.core.status_rx.take();
                 let levels = self.core.levels.clone();
+                let triggers = self.core.triggers.clone();
                 Some(Box::new(ui::DizmoEditor::new(
                     self.params.clone(),
                     $show_pan,
                     load_kit,
                     status_rx,
                     levels,
+                    triggers,
                 )))
             }
 
@@ -455,6 +483,7 @@ impl DizmoPlugin {
         let frames = buffer.samples();
 
         self.core.check_engine_updates();
+        self.core.decay_triggers(frames);
 
         for channel_samples in buffer.iter_samples() {
             for sample in channel_samples {
@@ -520,7 +549,9 @@ impl DizmoPlugin {
             right,
             &self.params.channels,
         );
+        let triggered = engine.take_triggered();
         self.core.update_levels(frames);
+        self.core.mark_triggered(triggered);
 
         ProcessStatus::Normal
     }
@@ -536,6 +567,7 @@ impl DizmoMultiPlugin {
         let frames = aux.outputs.first().map_or(0, |output| output.samples());
 
         self.core.check_engine_updates();
+        self.core.decay_triggers(frames);
 
         for output in aux.outputs.iter_mut() {
             for channel_samples in output.iter_samples() {
@@ -632,7 +664,9 @@ impl DizmoMultiPlugin {
             }
         }
 
+        let triggered = engine.take_triggered();
         self.core.update_levels(frames);
+        self.core.mark_triggered(triggered);
 
         ProcessStatus::Normal
     }

@@ -2,7 +2,7 @@ use crate::ui::fader::show_fader;
 use crate::ui::knob::{KNOB_RADIUS, show_knob};
 use crate::ui::{
     CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, LoadStatus, MUTE_ACTIVE,
-    SOLO_ACTIVE, TEXT, TEXT_DIM,
+    SOLO_ACTIVE, TEXT, TEXT_DIM, TRACK_BG, TRIGGER_ACTIVE,
 };
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::prelude::*;
@@ -13,6 +13,9 @@ pub const STRIP_WIDTH: f32 = 128.0;
 
 /// Height of one channel strip card.
 pub const STRIP_HEIGHT: f32 = 460.0;
+
+/// Width of the trigger indicator bar on the right edge of a strip.
+const TRIGGER_BAR_WIDTH: f32 = 14.0;
 
 /// Draws a single channel strip matching the mockup layout:
 /// number badge, editable name, solo/mute, choke assign, pan knob and vertical fader.
@@ -120,7 +123,7 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
     // --- Vertical fader ---
     let fader_rect = Rect::from_min_max(
         pos2(inner.left(), fader_top),
-        pos2(inner.right(), inner.bottom()),
+        pos2(inner.right() - TRIGGER_BAR_WIDTH - 4.0, inner.bottom()),
     );
     let level = f32::from_bits(state.levels[index].load(Ordering::Relaxed));
     show_fader(
@@ -131,6 +134,20 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         fader_rect,
         level,
     );
+
+    // --- Trigger indicator: a tall bar on the right edge that lights up at a
+    // fixed brightness whenever a note triggers this channel. It depends only
+    // on whether a hit happened (not on the channel's volume) and fades back
+    // out over time.
+    let trigger_bar = Rect::from_min_max(
+        pos2(inner.right() - TRIGGER_BAR_WIDTH, fader_top),
+        pos2(inner.right(), inner.bottom()),
+    );
+    ui.painter().rect_filled(trigger_bar, 4.0, TRACK_BG);
+    let trigger = f32::from_bits(state.triggers[index].load(Ordering::Relaxed));
+    if trigger > 0.01 {
+        ui.painter().rect_filled(trigger_bar, 4.0, TRIGGER_ACTIVE);
+    }
 }
 
 /// A small rounded toggle button drawn manually.

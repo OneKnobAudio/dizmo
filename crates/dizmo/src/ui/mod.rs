@@ -38,6 +38,9 @@ pub(crate) const KNOB_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
 pub(crate) const INDICATOR: Color32 = Color32::from_rgb(0xe8, 0xec, 0xf1);
 pub(crate) const SOLO_ACTIVE: Color32 = Color32::from_rgb(0x9a, 0x8a, 0x3c);
 pub(crate) const MUTE_ACTIVE: Color32 = Color32::from_rgb(0xb0, 0x4a, 0x46);
+/// The trigger indicator bar: a note hit lights the channel regardless of its
+/// volume. Bright amber, distinct from the blue fader fill.
+pub(crate) const TRIGGER_ACTIVE: Color32 = Color32::from_rgb(0xe8, 0x9a, 0x3c);
 
 /// The header bar height in the mockup.
 const HEADER_HEIGHT: f32 = 42.0;
@@ -68,6 +71,10 @@ pub struct EditorState {
     /// Per-channel linear peak levels (as `f32` bits), written by the audio
     /// thread each block and read by the strips to light their signal LEDs.
     pub levels: Arc<[AtomicU32; NUM_CHANNELS]>,
+    /// Per-channel trigger activity (as `f32` bits): set to 1.0 when a note
+    /// triggers the channel, then decays; the strips animate their channel
+    /// indicator while this is lit.
+    pub triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
     /// Whether the Mappings dialog is currently open.
     pub show_mappings: bool,
     /// The in-window kit picker.
@@ -94,6 +101,7 @@ impl EditorState {
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
         levels: Arc<[AtomicU32; NUM_CHANNELS]>,
+        triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
     ) -> Self {
         Self {
             params,
@@ -102,6 +110,7 @@ impl EditorState {
             status_rx,
             load_status: LoadStatus::Idle,
             levels,
+            triggers,
             show_mappings: false,
             file_dialog: kit_file_dialog(),
         }
@@ -140,9 +149,11 @@ impl DizmoEditor {
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
         levels: Arc<[AtomicU32; NUM_CHANNELS]>,
+        triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
     ) -> Self {
         let egui_state = params.editor_state.clone();
-        let editor_state = EditorState::new(params, show_pan, load_kit, status_rx, levels);
+        let editor_state =
+            EditorState::new(params, show_pan, load_kit, status_rx, levels, triggers);
 
         let inner = create_egui_editor(
             egui_state,
@@ -173,6 +184,7 @@ impl Default for DizmoEditor {
             true,
             Arc::new(|_| {}),
             Some(rx),
+            Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
             Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
         )
     }
@@ -282,7 +294,7 @@ fn draw_mappings_dialog(ui: &mut Ui, state: &mut EditorState) {
             };
 
             if mappings.is_empty() {
-                ui.label(RichText::new("No mapped instruments in this kit.").color(TEXT_DIM));
+                ui.label(RichText::new("None").color(TEXT_DIM));
                 return;
             }
 
