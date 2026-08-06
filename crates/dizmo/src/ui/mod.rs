@@ -3,12 +3,14 @@
 use crate::KitStatus;
 use crate::params::{DizmoParams, NUM_CHANNELS};
 use egui::{
-    Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
+    Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use egui_file_dialog::FileDialog;
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::prelude::*;
-use nice_plug_egui::{EguiNiceSettings, EguiState, create_egui_editor};
+use nice_plug_egui::{
+    EguiNiceSettings, EguiState, create_egui_editor, resizable_window::ResizableWindow,
+};
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,6 +44,9 @@ const HEADER_HEIGHT: f32 = 42.0;
 
 /// The default editor window size in logical pixels.
 const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(1240.0, 560.0);
+
+/// The smallest the editor window can be dragged to.
+const MIN_WINDOW_SIZE: Vec2 = Vec2::new(900.0, 500.0);
 
 /// Persistent editor state used to restore the window size.
 pub fn default_editor_state() -> Arc<EguiState> {
@@ -147,7 +152,11 @@ impl DizmoEditor {
                 ctx.set_visuals(egui::Visuals::dark());
             },
             |ui, setter, _commands, state| {
-                draw_ui(ui, setter, state);
+                ResizableWindow::new("dizmo-window")
+                    .min_size(MIN_WINDOW_SIZE)
+                    .show(ui, |ui| {
+                        draw_ui(ui, setter, state);
+                    });
             },
         )
         .expect("Failed to create the DIZMO editor");
@@ -258,11 +267,12 @@ fn draw_mappings_dialog(ui: &mut Ui, state: &mut EditorState) {
     egui::Window::new(title)
         .title_bar(true)
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .default_size(vec2(520.0, 320.0))
+        .min_size(vec2(360.0, 200.0))
         .default_pos(pos2(220.0, 80.0))
         .open(&mut state.show_mappings)
         .show(ui.ctx(), |ui| {
-            ui.set_min_width(440.0);
             let Some(mappings) = body else {
                 ui.label(
                     RichText::new("Load a kit to see its MIDI and channel mappings")
@@ -276,22 +286,26 @@ fn draw_mappings_dialog(ui: &mut Ui, state: &mut EditorState) {
                 return;
             }
 
-            egui::Grid::new("dizmo-mappings-grid")
-                .num_columns(3)
-                .striped(true)
-                .spacing(vec2(18.0, 4.0))
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for header in ["Instrument", "MIDI notes", "Channel map"] {
-                        ui.label(RichText::new(header).strong().color(TEXT_DIM));
-                    }
-                    ui.end_row();
+                    egui::Grid::new("dizmo-mappings-grid")
+                        .num_columns(3)
+                        .striped(true)
+                        .spacing(vec2(18.0, 4.0))
+                        .show(ui, |ui| {
+                            for header in ["Instrument", "MIDI notes", "Channel map"] {
+                                ui.label(RichText::new(header).strong().color(TEXT_DIM));
+                            }
+                            ui.end_row();
 
-                    for mapping in mappings {
-                        ui.label(RichText::new(&mapping.instrument).color(TEXT));
-                        ui.label(note_text(&mapping.notes));
-                        ui.label(channel_text(&mapping.channel_map));
-                        ui.end_row();
-                    }
+                            for mapping in mappings {
+                                ui.label(RichText::new(&mapping.instrument).color(TEXT));
+                                ui.label(note_text(&mapping.notes));
+                                ui.label(channel_text(&mapping.channel_map));
+                                ui.end_row();
+                            }
+                        });
                 });
         });
 }
@@ -308,19 +322,17 @@ fn note_text(notes: &[u8]) -> String {
         .join(" · ")
 }
 
-/// "kick-L → kick · kick-R → kick · OH_L → bus (main)" for the channel map.
+/// "kick-L → kick · kick-R → kick" for the main channel map entries only.
 fn channel_text(assignments: &[crate::engine::ChannelAssignment]) -> String {
-    if assignments.is_empty() {
+    let main: Vec<_> = assignments
+        .iter()
+        .filter(|map| map.is_main)
+        .map(|map| format!("{} → {}", map.in_name, map.out_name))
+        .collect();
+    if main.is_empty() {
         return "—".to_string();
     }
-    assignments
-        .iter()
-        .map(|map| {
-            let main = if map.is_main { " (main)" } else { "" };
-            format!("{} → {}{}", map.in_name, map.out_name, main)
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
+    main.join(" · ")
 }
 
 /// Converts a MIDI note number to a note name like "C3" or "A#2".

@@ -308,15 +308,6 @@ fn decode_file(
     })
 }
 
-/// Resamples `data` from `src_rate` to `dst_rate` using a Lanczos-3
-/// windowed-sinc kernel. Downsampling is anti-aliased by scaling the kernel by
-/// the ratio. The result is normalized by the summed kernel weights so signals
-/// keep their amplitude at the buffer edges.
-///
-/// Kernel weights depend only on the fractional position of an output sample,
-/// which repeats with the reduced `src_rate/dst_rate` period, so they are
-/// precomputed once per phase instead of re-evaluated per sample. That keeps
-/// this loading hot loop to a table lookup and multiply-accumulate.
 fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>, SampleError> {
     let config = PRESET_GOOD
         .with_input_rate(src_rate as usize)
