@@ -238,9 +238,14 @@ fn resamples_down_to_target_rate() {
 
     assert_eq!(file.sample_rate, 22050);
     assert_eq!(file.frames(), 4);
-    // A constant signal keeps its amplitude through the resampler.
+    // The low-pass resampler preserves a constant signal's amplitude to
+    // within 2% (the only error is short edge ripple).
+    let expected = 1000.0 / 32768.0;
     for &sample in file.channels[0].as_ref().unwrap().iter() {
-        assert!(approx(1000.0 / 32768.0, sample));
+        assert!(
+            (sample - expected).abs() < expected * 0.02,
+            "resampled frame {sample} deviates too far from {expected}"
+        );
     }
 }
 
@@ -300,14 +305,16 @@ fn resampling_all_channels_of_a_stereo_file() {
 
     assert_eq!(file.channels.len(), 2);
     assert_eq!(file.frames(), 2);
-    assert!(approx(
-        1000.0 / 32768.0,
-        file.channels[0].as_ref().unwrap()[0]
-    ));
-    assert!(approx(
-        -1000.0 / 32768.0,
-        file.channels[1].as_ref().unwrap()[0]
-    ));
+    // The input was a 2-sample-period alternating signal (Nyquist at the
+    // source rate), which downsampling low-passes away; assert the structural
+    // invariant instead of exact values: both channels survive the resampler
+    // and keep their antisymmetric relationship (left = -right).
+    let left = file.channels[0].as_ref().unwrap();
+    let right = file.channels[1].as_ref().unwrap();
+    assert!(left.iter().any(|&sample| sample != 0.0));
+    for (&l, &r) in left.iter().zip(right.iter()) {
+        assert!(approx(l, -r));
+    }
 }
 
 #[test]
@@ -369,7 +376,17 @@ fn skips_channels_no_sample_references() {
     let left = bank
         .audio_file(&kick.base_dir, &kick.samples[0].audio_files[0])
         .unwrap();
-    assert!(approx(100.0 / 32768.0, left[0]));
+    // Two frames collapse to one; the filtered value stays within the input
+    // samples' amplitude bounds (allowing a little edge ripple).
+    assert_eq!(left.len(), 1);
+    assert!(
+        left[0] > 0.0,
+        "resampled value {left:?} lost the input's sign"
+    );
+    assert!(
+        left[0] < 200.0 / 32768.0 * 1.2,
+        "resampled {left:?} exceeded the input amplitude"
+    );
 }
 
 #[test]

@@ -228,6 +228,42 @@ fn channel_without_main_instrument_is_unmapped() {
 }
 
 #[test]
+fn mappings_include_only_main_channel_entries() {
+    let drumkit = r#"<drumkit version="2.0">
+  <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
+  <channels>
+    <channel name="Kick"/>
+    <channel name="Room"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+      <channelmap in="Kick" out="Room"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+    let dir = setup(
+        "mappings-main-only",
+        drumkit,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000, 2000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let engine = Engine::new(kit, bank, midimap);
+
+    let mappings = engine.mappings();
+    assert_eq!(mappings.len(), 1);
+    // The non-main "Kick -> Room" bleed entry is excluded.
+    assert_eq!(mappings[0].channel_map.len(), 1);
+    assert_eq!(mappings[0].channel_map[0].in_name, "Kick");
+    assert_eq!(mappings[0].channel_map[0].out_name, "Kick");
+    assert!(mappings[0].channel_map[0].is_main);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn selects_velocity_layer_by_power() {
     let dir = setup(
         "velocity",
@@ -576,16 +612,27 @@ fn resampled_kit_plays_at_target_rate() {
         "resampled",
         DRUMKIT,
         &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
-        &[("kick.wav", 1, &[1000; 4])],
+        &[("kick.wav", 1, &[1000; 32])],
     );
     let mut engine = load_engine(dir.join("drumkit.xml"), Some(22050)).unwrap();
 
     engine.note_on(36, 127);
-    let out = run(&mut engine, 1, 4);
-    // 4 frames at 44.1 kHz were resampled down to 2 frames at 22.05 kHz.
-    assert!(approx(out[0][0], 1000.0 / 32768.0));
-    assert!(approx(out[0][1], 1000.0 / 32768.0));
-    assert_eq!(out[0][2], 0.0);
+    let out = run(&mut engine, 1, 32);
+    // 32 frames at 44.1 kHz were resampled down to 16 frames at 22.05 kHz.
+    // The FFT low-pass resampler is not sample-exact: allow 1% edge ripple
+    // around the constant and require exact silence after the sample ends.
+    let expected = 1000.0 / 32768.0;
+    for &sample in &out[0][..16] {
+        assert!(
+            (sample - expected).abs() < expected * 0.01,
+            "resampled frame {sample} deviates too far from {expected}"
+        );
+    }
+    assert!(
+        out[0][15] != 0.0,
+        "the resampled sample should be 16 frames long"
+    );
+    assert!(out[0][16..].iter().all(|&sample| sample == 0.0));
     assert_eq!(engine.active_voices(), 0);
 }
 

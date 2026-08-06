@@ -74,7 +74,8 @@ pub struct InstrumentMapping {
     pub instrument: String,
     /// MIDI notes from the midimap that trigger this instrument.
     pub notes: Vec<u8>,
-    /// Channelmap entries: instrument channel -> kit output channel.
+    /// Channelmap entries: instrument channel -> kit output channel. Only
+    /// entries marked `main` are included.
     pub channel_map: Vec<ChannelAssignment>,
 }
 
@@ -326,6 +327,7 @@ impl Engine {
                 let channel_map = instrument
                     .channel_map
                     .iter()
+                    .filter(|map| map.is_main)
                     .map(|map| ChannelAssignment {
                         in_name: map.in_name.clone(),
                         out_name: map.out_name.clone(),
