@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dizmo::engine::{Engine, load_engine};
+use dizmo::engine::{Engine, MAX_VOICES, load_engine};
 use dizmo::kit::{Kit, MidiMap, SampleBank, load_samples};
 
 const DRUMKIT: &str = r#"<drumkit version="2.0">
@@ -374,15 +374,17 @@ fn choke_fades_target_over_choketime() {
 }
 
 #[test]
-fn retrigger_self_chokes_previous_voice() {
+fn retrigger_fades_previous_voice_instead_of_cutting() {
     let dir = setup(
         "retrigger",
         DRUMKIT,
         &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
-        &[("kick.wav", 1, &[1000, 2000, 3000])],
+        &[("kick.wav", 1, &[1000, 2000, 3000, 4000, 4000, 4000])],
     );
     let (kit, bank, midimap) = load(&dir);
     let mut engine = Engine::new(kit, bank, midimap);
+    // 2 kHz sample rate => the 1 ms retrigger fade is exactly 2 frames.
+    engine.set_sample_rate(2000.0);
 
     engine.note_on(36, 127);
     let out = run(&mut engine, 1, 1);
@@ -391,8 +393,19 @@ fn retrigger_self_chokes_previous_voice() {
 
     engine.note_on(36, 127);
     let out = run(&mut engine, 1, 1);
-    // The fresh voice restarts from position 0, not position 1.
-    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    // The fresh voice restarts from position 0; the previous voice is not cut
+    // but rings on its first fade frame (still full gain).
+    assert!(approx(out[0][0], (2000.0 + 1000.0) / 32768.0));
+    assert_eq!(engine.active_voices(), 2);
+
+    let out = run(&mut engine, 1, 4);
+    // The previous voice fades out over its 2 fade frames (gains 0.5, 0.0)
+    // while the fresh voice plays s[1..5] in full.
+    assert!(approx(out[0][0], (3000.0 * 0.5 + 2000.0) / 32768.0));
+    assert!(approx(out[0][1], 3000.0 / 32768.0));
+    assert!(approx(out[0][2], 4000.0 / 32768.0));
+    assert!(approx(out[0][3], 4000.0 / 32768.0));
+    assert_eq!(engine.active_voices(), 1);
 }
 
 #[test]
@@ -414,11 +427,13 @@ fn mid_block_retrigger_restarts_sample_from_beginning() {
     assert!(approx(buffers[0][1], 1000.0 / 32768.0));
     assert!(approx(buffers[0][2], 2000.0 / 32768.0));
 
-    // Retrigger at frame 4: must restart from s[0], not continue at s[2].
+    // Retrigger at frame 4: the fresh voice restarts from s[0], while the
+    // previous voice plays out its one remaining frame (s[3]) at full gain on
+    // the first fade frame instead of being cut.
     engine.process(3, 1, &mut buffers);
     engine.note_on(36, 127);
     engine.process(4, 2, &mut buffers);
-    assert!(approx(buffers[0][4], 1000.0 / 32768.0));
+    assert!(approx(buffers[0][4], 5000.0 / 32768.0));
     assert!(approx(buffers[0][5], 2000.0 / 32768.0));
     assert_eq!(engine.active_voices(), 1);
 }
@@ -442,20 +457,63 @@ fn ignores_unmapped_notes() {
 }
 
 #[test]
-fn all_notes_off_clears_voices() {
+fn all_notes_off_fades_voices_out_instead_of_cutting() {
     let dir = setup(
         "all-off",
         DRUMKIT,
         &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
-        &[("kick.wav", 1, &[1000])],
+        &[("kick.wav", 1, &[1000; 8])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+    // 1 kHz sample rate => the 5 ms fade is exactly 5 frames.
+    engine.set_sample_rate(1000.0);
+
+    engine.note_on(36, 127);
+    assert_eq!(engine.active_voices(), 1);
+
+    engine.all_notes_off();
+    // Voices are faded out, not cut, so they linger briefly.
+    assert_eq!(engine.active_voices(), 1);
+
+    let out = run(&mut engine, 1, 4);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(out[0][1], 800.0 / 32768.0));
+    assert!(approx(out[0][2], 600.0 / 32768.0));
+    assert!(approx(out[0][3], 400.0 / 32768.0));
+    assert_eq!(engine.active_voices(), 1);
+
+    let out = run(&mut engine, 1, 2);
+    assert!(approx(out[0][0], 200.0 / 32768.0));
+    assert_eq!(out[0][1], 0.0);
+    assert_eq!(engine.active_voices(), 0);
+}
+
+#[test]
+fn voice_stealing_fades_the_oldest_instead_of_cutting() {
+    let dir = setup(
+        "steal",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000; 256])],
     );
     let (kit, bank, midimap) = load(&dir);
     let mut engine = Engine::new(kit, bank, midimap);
 
-    engine.note_on(36, 127);
-    assert_eq!(engine.active_voices(), 1);
-    engine.all_notes_off();
-    assert_eq!(engine.active_voices(), 0);
+    for _ in 0..=MAX_VOICES {
+        engine.note_on(36, 127);
+    }
+    // The MAX_VOICES+1-th note fades the oldest voice instead of dropping it,
+    // so all MAX_VOICES+1 voices are still present right after the hit.
+    assert_eq!(engine.active_voices(), MAX_VOICES + 1);
+
+    // Frame 0: every voice, including the oldest, rings at full gain. An
+    // instant cut would have silenced the stolen voice here.
+    let out = run(&mut engine, 1, 1);
+    assert!(approx(
+        out[0][0],
+        (MAX_VOICES + 1) as f32 * 1000.0 / 32768.0
+    ));
 }
 
 #[test]

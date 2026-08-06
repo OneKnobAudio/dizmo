@@ -11,9 +11,21 @@ use std::sync::Arc;
 
 use crate::kit::{Kit, KitError, MidiMap, SampleBank, SampleError, load_samples_with_progress};
 
-/// Maximum number of simultaneously playing voices; the oldest is dropped
+/// Maximum number of simultaneously playing voices; the oldest is faded out
 /// first when exceeded.
-const MAX_VOICES: usize = 64;
+pub const MAX_VOICES: usize = 64;
+
+/// Length of the click-prevention fade applied when a ringing voice is cut
+/// early by voice stealing at `MAX_VOICES` or by all-notes-off. No new hit
+/// overlaps these, so a longer fade is safe.
+const CUT_FADE_MS: f32 = 5.0;
+
+/// Length of the fade applied to the previous voice of the same instrument on
+/// retrigger. Much shorter than [`CUT_FADE_MS`]: a fresh hit starts
+/// immediately, so the old voice must vanish almost instantly to avoid
+/// doubling the drum (e.g. two kicks at once), while still ramping to silence
+/// to avoid a click. The residual 1 ms overlap is masked by the new attack.
+const RETRIGGER_FADE_MS: f32 = 1.0;
 
 /// The drum engine: note in -> voice playback into per-kit-channel mono output.
 pub struct Engine {
@@ -39,7 +51,8 @@ struct Voice {
     streams: Vec<VoiceStream>,
     position: f32,
     gain: f32,
-    /// Per-frame linear gain decrement while choking; `0` when not choking.
+    /// Per-frame linear gain decrement while fading out (choke or
+    /// click-prevention cut); `0` when not fading.
     fade_step: f32,
     finished: bool,
 }
@@ -134,8 +147,9 @@ impl Engine {
                 self.choke_instrument(victim, choke.choketime_ms);
             }
         }
-        // Self-choke: a retrigger cuts the previous voice.
-        self.choke_instrument(instrument_index, 0);
+        // Self-choke: a retrigger fades out the previous voice almost
+        // instantly so the drum is not heard twice, without clicking.
+        self.choke_instrument(instrument_index, RETRIGGER_FADE_MS as u32);
 
         self.trigger(instrument_index, velocity as f32 / 127.0);
     }
@@ -147,9 +161,16 @@ impl Engine {
         // This is a no-op for standard drum behavior.
     }
 
-    /// Stops all ringing voices immediately (panic / all-notes-off).
+    /// Fades out all ringing voices (panic / all-notes-off) so they stop
+    /// click-free instead of being cut.
     pub fn all_notes_off(&mut self) {
-        self.voices.clear();
+        let fade_frames = cut_fade_frames(self.sample_rate);
+        for voice in &mut self.voices {
+            if voice.finished || voice.fade_step > 0.0 {
+                continue;
+            }
+            begin_cut_fade(fade_frames, voice);
+        }
     }
 
     /// Mixes all voices into `out`, one mono `Vec` per kit channel. The buffers
@@ -249,7 +270,13 @@ impl Engine {
         }
 
         if self.voices.len() >= MAX_VOICES {
-            self.voices.remove(0);
+            // Fade out the oldest voice instead of cutting it, so stealing a
+            // ringing voice does not click. The faded voice expires within
+            // CUT_FADE_MS and frees its slot.
+            let fade_frames = cut_fade_frames(self.sample_rate);
+            if let Some(oldest) = self.voices.first_mut() {
+                begin_cut_fade(fade_frames, oldest);
+            }
         }
         self.voices.push(Voice {
             instrument: instrument_index,
@@ -374,6 +401,21 @@ impl Engine {
                 voice.fade_step = voice.gain / fade_frames;
             }
         }
+    }
+}
+
+/// Frames a [`CUT_FADE_MS`] fade spans at `sample_rate`.
+fn cut_fade_frames(sample_rate: f32) -> f32 {
+    CUT_FADE_MS / 1000.0 * sample_rate
+}
+
+/// Starts a click-prevention fade on `voice`, or finishes it when the fade is
+/// shorter than a single frame.
+fn begin_cut_fade(fade_frames: f32, voice: &mut Voice) {
+    if fade_frames <= 1.0 {
+        voice.finished = true;
+    } else {
+        voice.fade_step = voice.gain / fade_frames;
     }
 }
 

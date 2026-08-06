@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
-use ardftsrc::{InterleavedResampler, PRESET_GOOD};
+use ardftsrc::{PRESET_GOOD, PlanarResampler};
 
 use super::{AudioFile, Kit};
 
@@ -116,12 +116,13 @@ pub fn load_samples_with_progress(
             let next = &next;
             let tasks = &tasks;
             scope.spawn(move || {
+                let mut cache = ResamplerCache::new();
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(task) = tasks.get(index) else {
                         break;
                     };
-                    let decoded = decode_file(task, target_sample_rate);
+                    let decoded = decode_file(task, target_sample_rate, &mut cache);
                     let _ = tx.send((index, decoded));
                 }
             });
@@ -205,6 +206,7 @@ fn build_bank(
 fn decode_file(
     task: &SampleTask,
     target_sample_rate: Option<u32>,
+    cache: &mut ResamplerCache,
 ) -> Result<DecodedFile, SampleError> {
     let path = &task.path;
     let mut reader = hound::WavReader::open(path).map_err(|error| match error {
@@ -288,11 +290,7 @@ fn decode_file(
 
     let sample_rate = match target_sample_rate {
         Some(target) if target != spec.sample_rate => {
-            for (buffer, keep) in channels.iter_mut().zip(&wanted) {
-                if *keep {
-                    *buffer = resample(buffer, spec.sample_rate, target)?;
-                }
-            }
+            cache.resample(&mut channels, &wanted, spec.sample_rate, target)?;
             target
         }
         _ => spec.sample_rate,
@@ -308,16 +306,66 @@ fn decode_file(
     })
 }
 
-fn resample(data: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>, SampleError> {
-    let config = PRESET_GOOD
-        .with_input_rate(src_rate as usize)
-        .with_output_rate(dst_rate as usize)
-        .with_channels(1);
-    let mut resampler = InterleavedResampler::<f32>::new(config).unwrap();
-    let out = resampler
-        .process_all(data)
-        .map_err(|e| SampleError::Internal(e.to_string()))?;
-    Ok(out.interleave())
+/// Per-worker-thread resamplers, reused across the files that worker decodes.
+/// Building a resampler constructs FFT plans and scratch buffers, so caching
+/// one instance per `(source rate, target rate, channel count)` keeps that
+/// cost out of the per-file hot path. `process_all` resets its stream state
+/// between calls, so instances can be reused without explicit resets.
+struct ResamplerCache {
+    resamplers: HashMap<(u32, u32, usize), PlanarResampler<f32>>,
+}
+
+impl ResamplerCache {
+    fn new() -> Self {
+        Self {
+            resamplers: HashMap::new(),
+        }
+    }
+
+    /// Resamples every referenced channel of one file in a single call. The
+    /// data is already planar (one `Vec` per channel), so the planar API avoids
+    /// the interleave/deinterleave copies the interleaved wrapper would do.
+    fn resample(
+        &mut self,
+        channels: &mut [Vec<f32>],
+        wanted: &[bool],
+        src_rate: u32,
+        dst_rate: u32,
+    ) -> Result<(), SampleError> {
+        let refs: Vec<&[f32]> = wanted
+            .iter()
+            .zip(channels.iter())
+            .filter(|(keep, _)| **keep)
+            .map(|(_, buffer)| buffer.as_slice())
+            .collect();
+        if refs.is_empty() {
+            return Ok(());
+        }
+
+        let key = (src_rate, dst_rate, refs.len());
+        let config = PRESET_GOOD
+            .with_input_rate(src_rate as usize)
+            .with_output_rate(dst_rate as usize)
+            .with_channels(refs.len());
+        let resampler = self.resamplers.entry(key).or_insert_with(|| {
+            PlanarResampler::<f32>::new(config).expect(
+                "an ardftsrc configuration built from valid rates and channel counts is always valid",
+            )
+        });
+
+        let mut output = resampler
+            .process_all(&refs)
+            .map_err(|error| SampleError::Resampling(error.to_string()))?
+            .into_iter();
+        for (buffer, keep) in channels.iter_mut().zip(wanted) {
+            if *keep {
+                *buffer = output
+                    .next()
+                    .expect("the resampler emits one channel per input channel");
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Errors that can occur while loading and decoding samples.
