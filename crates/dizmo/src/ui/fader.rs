@@ -1,21 +1,27 @@
 use crate::ui::{ACCENT, CARD_BG, INDICATOR, KNOB_BORDER, TEXT, TEXT_DIM, TRACK_BG};
-use egui::{Align2, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use nice_plug::prelude::*;
 
-/// The fader range in dB above and below unity.
-pub const FADER_RANGE_DB: f32 = 12.0;
+/// The fader range in dB: minimum (fully down) and maximum (fully up).
+pub const FADER_MIN_DB: f32 = -18.0;
+pub const FADER_MAX_DB: f32 = 6.0;
+
+/// A peak level (linear 0..1) at or above which the signal LED lights up.
+const LED_THRESHOLD: f32 = 0.0001;
 
 /// Draws a vertical volume fader for one channel.
 ///
 /// * 0 dB sits at the vertical center of the track.
 /// * Dragging vertically sets the fader value; double clicking resets it to 0 dB.
 /// * The filled portion runs from the bottom of the track up to the fader position.
+/// * `level` (linear peak 0..1) drives a small signal LED at the top of the track.
 pub fn show_fader(
     ui: &mut Ui,
     setter: &ParamSetter,
     fader: &FloatParam,
     channel: usize,
     rect: Rect,
+    level: f32,
 ) {
     let response = ui.interact(
         rect,
@@ -25,7 +31,7 @@ pub fn show_fader(
 
     let track_width = 10.0;
     let track = Rect::from_min_max(
-        pos2(rect.center().x - track_width / 2.0, rect.top() + 16.0),
+        pos2(rect.center().x - track_width / 2.0, rect.top() + 24.0),
         pos2(rect.center().x + track_width / 2.0, rect.bottom() - 16.0),
     );
 
@@ -35,10 +41,11 @@ pub fn show_fader(
     if response.dragged()
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let db = FADER_RANGE_DB - (pos.y - track.top()) / track.height() * 2.0 * FADER_RANGE_DB;
+        let span = FADER_MAX_DB - FADER_MIN_DB;
+        let db = FADER_MAX_DB - (pos.y - track.top()) / track.height() * span;
         setter.set_parameter(
             fader,
-            util::db_to_gain(db.clamp(-FADER_RANGE_DB, FADER_RANGE_DB)),
+            util::db_to_gain(db.clamp(FADER_MIN_DB, FADER_MAX_DB)),
         );
     }
     if response.drag_stopped() {
@@ -51,15 +58,20 @@ pub fn show_fader(
     }
 
     let db = util::gain_to_db(fader.value());
-    let normalized = ((db + FADER_RANGE_DB) / (2.0 * FADER_RANGE_DB)).clamp(0.0, 1.0);
+    let span = FADER_MAX_DB - FADER_MIN_DB;
+    let normalized = ((db - FADER_MIN_DB) / span).clamp(0.0, 1.0);
     let handle_y = track.bottom() - normalized * track.height();
-    let zero_y = track.bottom() - 0.5 * track.height();
+    let zero_y = track.bottom() - (0.0 - FADER_MIN_DB) / span * track.height();
 
     let painter = ui.painter();
     let label_x = track.left() - 6.0;
 
-    // Scale labels: +12 / 0 / -12
-    for (fraction, label) in [(1.0, "+12"), (0.5, "0"), (0.0, "-12")] {
+    // Scale labels: +6 / 0 / -18
+    for (fraction, label) in [
+        (1.0, "+6"),
+        ((0.0 - FADER_MIN_DB) / span, "0"),
+        (0.0, "-18"),
+    ] {
         let y = track.bottom() - fraction * track.height();
         painter.text(
             pos2(label_x, y),
@@ -95,14 +107,30 @@ pub fn show_fader(
         Stroke::new(1.5, CARD_BG),
     );
 
-    // Current value readout above the track
+    // Signal LED: lights up when the channel is receiving audio, brighter with level
+    let led_center = pos2(rect.center().x, track.top() - 12.0);
+    let lit = level >= LED_THRESHOLD;
+    let led_color = if lit {
+        let intensity = (level * 3.0).clamp(0.0, 1.0);
+        Color32::from_rgb(
+            (intensity * 255.0) as u8,
+            (intensity * 230.0) as u8,
+            (intensity * 120.0) as u8,
+        )
+    } else {
+        Color32::from_rgb(40, 40, 40)
+    };
+    painter.circle_filled(led_center, 3.5, led_color);
+    painter.circle_stroke(led_center, 3.5, Stroke::new(1.0, KNOB_BORDER));
+
+    // Current value readout below the LED
     let value_text = if db.abs() < 0.05 {
         "0.0 dB".to_string()
     } else {
         format!("{db:+.1} dB")
     };
     painter.text(
-        pos2(rect.center().x, track.top() - 8.0),
+        pos2(rect.center().x, track.top() - 20.0),
         Align2::CENTER_CENTER,
         value_text,
         FontId::proportional(8.0),

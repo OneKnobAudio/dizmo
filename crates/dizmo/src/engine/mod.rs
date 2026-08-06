@@ -50,6 +50,25 @@ struct VoiceStream {
     data: Arc<[f32]>,
 }
 
+/// One row of the editor's Mappings dialog: an instrument with the MIDI notes
+/// that trigger it and its channel assignment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstrumentMapping {
+    pub instrument: String,
+    /// MIDI notes from the midimap that trigger this instrument.
+    pub notes: Vec<u8>,
+    /// Channelmap entries: instrument channel -> kit output channel.
+    pub channel_map: Vec<ChannelAssignment>,
+}
+
+/// A single `<channelmap>` entry of an instrument.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelAssignment {
+    pub in_name: String,
+    pub out_name: String,
+    pub is_main: bool,
+}
+
 impl Engine {
     pub fn new(kit: Arc<Kit>, bank: Arc<SampleBank>, midimap: MidiMap) -> Self {
         let output_index = kit
@@ -188,31 +207,6 @@ impl Engine {
         &self.kit.name
     }
 
-    /// The MIDI notes from the midimap that trigger sound on each kit channel,
-    /// indexed by channel and sorted ascending. Computed once at load time and
-    /// shown in the editor strips.
-    pub fn notes_per_channel(&self) -> Vec<Vec<u8>> {
-        let mut per_channel = vec![Vec::new(); self.kit.channels.len()];
-        for entry in &self.midimap.entries {
-            let Some(&instrument_index) = self.instrument_index.get(&entry.instrument) else {
-                continue;
-            };
-            let instrument = &self.kit.instruments[instrument_index];
-            for map in instrument.channel_map.iter().filter(|map| map.is_main) {
-                let Some(&output) = self.output_index.get(&map.out_name) else {
-                    continue;
-                };
-                if !per_channel[output].contains(&entry.note) {
-                    per_channel[output].push(entry.note);
-                }
-            }
-        }
-        for notes in &mut per_channel {
-            notes.sort_unstable();
-        }
-        per_channel
-    }
-
     /// The instrument assigned to each kit output channel via its channelmap,
     /// considering only `main` channelmap entries. `None` for channels no
     /// instrument routes its main channel to. Shown in the editor strips when a
@@ -265,6 +259,38 @@ impl Engine {
             fade_step: 0.0,
             finished: false,
         });
+    }
+
+    /// The per-instrument MIDI and channel mappings, shown in the editor's
+    /// Mappings dialog. Computed once at load time.
+    pub fn mappings(&self) -> Vec<InstrumentMapping> {
+        self.kit
+            .instruments
+            .iter()
+            .map(|instrument| {
+                let notes = self
+                    .midimap
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.instrument == instrument.name)
+                    .map(|entry| entry.note)
+                    .collect();
+                let channel_map = instrument
+                    .channel_map
+                    .iter()
+                    .map(|map| ChannelAssignment {
+                        in_name: map.in_name.clone(),
+                        out_name: map.out_name.clone(),
+                        is_main: map.is_main,
+                    })
+                    .collect();
+                InstrumentMapping {
+                    instrument: instrument.name.clone(),
+                    notes,
+                    channel_map,
+                }
+            })
+            .collect()
     }
 
     /// Picks a sample for `instrument` based on the normalized velocity.

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::engine::Engine;
+use crate::engine::{Engine, InstrumentMapping};
 use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, ChannelParams, DizmoParams, NUM_CHANNELS};
 
 pub mod engine;
@@ -19,14 +19,14 @@ pub enum LoadTask {
 
 /// Load status messages sent from the loader thread to the editor GUI.
 pub(crate) enum KitStatus {
-    /// The kit was loaded; carries its display name from drumkit.xml and, per
-    /// kit channel, the instrument assigned to it and the MIDI notes from the
-    /// midimap that trigger sound on it.
+    /// The kit was loaded; carries its display name from drumkit.xml and the
+    /// kit's channel names.
     Loaded {
         name: String,
         /// The kit's channel names from its `<channels>` section.
         channels: Vec<String>,
-        notes: Vec<Vec<u8>>,
+        /// The per-instrument MIDI note and channel mappings for the dialog.
+        mappings: Vec<InstrumentMapping>,
     },
     /// The kit failed to load; carries the error message.
     Failed(String),
@@ -63,6 +63,9 @@ struct AudioCore {
     status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
     /// The sample rate the loader thread resamples to; set in `initialize`.
     host_sample_rate: Arc<AtomicU32>,
+    /// Per-channel linear peak levels (as `f32` bits), written here each block
+    /// on the audio thread and shared with the editor for its signal LEDs.
+    levels: Arc<[AtomicU32; NUM_CHANNELS]>,
 }
 
 impl AudioCore {
@@ -75,6 +78,7 @@ impl AudioCore {
             old_engine_tx: None,
             status_rx: None,
             host_sample_rate: Arc::new(AtomicU32::new(0)),
+            levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
         }
     }
 
@@ -117,6 +121,23 @@ impl AudioCore {
                 .scratch
                 .first()
                 .is_some_and(|buffer| buffer.len() >= frames)
+    }
+
+    /// Updates the shared per-channel peak levels from the scratch buffers,
+    /// decaying the previous value so the LED falls off after the sound ends.
+    /// Realtime-safe: no allocation, no locks.
+    fn update_levels(&self, frames: usize) {
+        let dt = frames as f32 / self.sample_rate;
+        let decay = (-dt / 0.25).exp();
+        for (index, buffer) in self.scratch.iter().enumerate() {
+            let peak = buffer[..frames]
+                .iter()
+                .fold(0.0f32, |max, sample| max.max(sample.abs()));
+            let level = &self.levels[index];
+            let prev = f32::from_bits(level.load(Ordering::Relaxed));
+            let next = peak.max(prev * decay);
+            level.store(next.to_bits(), Ordering::Relaxed);
+        }
     }
 }
 
@@ -272,11 +293,13 @@ macro_rules! impl_dizmo_plugin {
                     async_executor.execute_background(LoadTask::LoadKit { path });
                 });
                 let status_rx = self.core.status_rx.take();
+                let levels = self.core.levels.clone();
                 Some(Box::new(ui::DizmoEditor::new(
                     self.params.clone(),
                     $show_pan,
                     load_kit,
                     status_rx,
+                    levels,
                 )))
             }
 
@@ -324,13 +347,13 @@ macro_rules! impl_dizmo_plugin {
                                 });
                                 let name = engine.kit_name().to_string();
                                 eprintln!("[dizmo] kit '{name}' loaded in {:?}", start.elapsed());
-                                let notes = engine.notes_per_channel();
                                 let channels = engine.channel_names();
+                                let mappings = engine.mappings();
                                 let _ = engine_tx.send(Ok(engine));
                                 let _ = status_tx.send(KitStatus::Loaded {
                                     name,
                                     channels,
-                                    notes,
+                                    mappings,
                                 });
                             }
                             Ok(Err(err)) => {
@@ -497,6 +520,7 @@ impl DizmoPlugin {
             right,
             &self.params.channels,
         );
+        self.core.update_levels(frames);
 
         ProcessStatus::Normal
     }
@@ -607,6 +631,8 @@ impl DizmoMultiPlugin {
                 destination[sample_idx] = sample * gain;
             }
         }
+
+        self.core.update_levels(frames);
 
         ProcessStatus::Normal
     }

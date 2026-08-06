@@ -2,7 +2,9 @@
 
 use crate::KitStatus;
 use crate::params::{DizmoParams, NUM_CHANNELS};
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{
+    Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
+};
 use egui_file_dialog::FileDialog;
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::prelude::*;
@@ -10,6 +12,7 @@ use nice_plug_egui::{EguiNiceSettings, EguiState, create_egui_editor};
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 pub mod channel_strip;
 pub mod fader;
@@ -24,6 +27,7 @@ pub(crate) const CARD_BG: Color32 = Color32::from_rgb(0x1d, 0x1f, 0x24);
 pub(crate) const CARD_BORDER: Color32 = Color32::from_rgb(0x2d, 0x31, 0x38);
 pub(crate) const FIELD_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x2c);
 pub(crate) const FIELD_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
+pub(crate) const FIELD_HOVER: Color32 = Color32::from_rgb(0x2a, 0x2e, 0x36);
 pub(crate) const TRACK_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x2c);
 pub(crate) const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf4, 0xf7);
 pub(crate) const TEXT_DIM: Color32 = Color32::from_rgb(0x8b, 0x90, 0x99);
@@ -56,6 +60,11 @@ pub struct EditorState {
     pub status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
     /// What the header reports about the current kit.
     pub load_status: LoadStatus,
+    /// Per-channel linear peak levels (as `f32` bits), written by the audio
+    /// thread each block and read by the strips to light their signal LEDs.
+    pub levels: Arc<[AtomicU32; NUM_CHANNELS]>,
+    /// Whether the Mappings dialog is currently open.
+    pub show_mappings: bool,
     /// The in-window kit picker.
     pub file_dialog: FileDialog,
 }
@@ -79,6 +88,7 @@ impl EditorState {
         show_pan: bool,
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+        levels: Arc<[AtomicU32; NUM_CHANNELS]>,
     ) -> Self {
         Self {
             params,
@@ -86,6 +96,8 @@ impl EditorState {
             load_kit,
             status_rx,
             load_status: LoadStatus::Idle,
+            levels,
+            show_mappings: false,
             file_dialog: kit_file_dialog(),
         }
     }
@@ -105,7 +117,8 @@ pub enum LoadStatus {
         name: String,
         /// The kit's channel names from its `<channels>` section.
         channels: Vec<String>,
-        notes: Vec<Vec<u8>>,
+        /// The per-instrument MIDI note and channel mappings for the dialog.
+        mappings: Vec<crate::engine::InstrumentMapping>,
     },
     Failed(String),
 }
@@ -121,9 +134,10 @@ impl DizmoEditor {
         show_pan: bool,
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+        levels: Arc<[AtomicU32; NUM_CHANNELS]>,
     ) -> Self {
         let egui_state = params.editor_state.clone();
-        let editor_state = EditorState::new(params, show_pan, load_kit, status_rx);
+        let editor_state = EditorState::new(params, show_pan, load_kit, status_rx, levels);
 
         let inner = create_egui_editor(
             egui_state,
@@ -150,6 +164,7 @@ impl Default for DizmoEditor {
             true,
             Arc::new(|_| {}),
             Some(rx),
+            Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
         )
     }
 }
@@ -209,12 +224,6 @@ fn draw_ui(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState) {
     // Advance the cursor below the header so the scroll area covers the rest.
     ui.allocate_exact_size(vec2(rect.width(), HEADER_HEIGHT + 6.0), Sense::hover());
 
-    let num_strips = state
-        .params
-        .num_strips
-        .value()
-        .clamp(1, NUM_CHANNELS as i32) as usize;
-
     let content_rect = Rect::from_min_max(
         pos2(rect.left(), rect.top() + HEADER_HEIGHT + 6.0),
         pos2(rect.right(), rect.bottom()),
@@ -227,15 +236,103 @@ fn draw_ui(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState) {
             ui.set_min_height(content_rect.height() - 12.0);
             ui.horizontal_top(|ui| {
                 ui.add_space(6.0);
-                for index in 0..num_strips {
+                for index in 0..NUM_CHANNELS {
                     channel_strip::draw_strip(ui, setter, state, index);
                     ui.add_space(8.0);
                 }
             });
         });
+
+    if state.show_mappings {
+        draw_mappings_dialog(ui, state);
+    }
 }
 
-fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect: Rect) {
+/// The Mappings dialog: MIDI note map and channel assignment per instrument.
+fn draw_mappings_dialog(ui: &mut Ui, state: &mut EditorState) {
+    let (title, body) = match &state.load_status {
+        LoadStatus::Loaded { name, mappings, .. } => (name.clone(), Some(mappings.as_slice())),
+        _ => ("Mappings".to_string(), None),
+    };
+
+    egui::Window::new(title)
+        .title_bar(true)
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(pos2(220.0, 80.0))
+        .open(&mut state.show_mappings)
+        .show(ui.ctx(), |ui| {
+            ui.set_min_width(440.0);
+            let Some(mappings) = body else {
+                ui.label(
+                    RichText::new("Load a kit to see its MIDI and channel mappings")
+                        .color(TEXT_DIM),
+                );
+                return;
+            };
+
+            if mappings.is_empty() {
+                ui.label(RichText::new("No mapped instruments in this kit.").color(TEXT_DIM));
+                return;
+            }
+
+            egui::Grid::new("dizmo-mappings-grid")
+                .num_columns(3)
+                .striped(true)
+                .spacing(vec2(18.0, 4.0))
+                .show(ui, |ui| {
+                    for header in ["Instrument", "MIDI notes", "Channel map"] {
+                        ui.label(RichText::new(header).strong().color(TEXT_DIM));
+                    }
+                    ui.end_row();
+
+                    for mapping in mappings {
+                        ui.label(RichText::new(&mapping.instrument).color(TEXT));
+                        ui.label(note_text(&mapping.notes));
+                        ui.label(channel_text(&mapping.channel_map));
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+/// "C3 · D#3 …" for a set of MIDI notes, or "—" when unmapped.
+fn note_text(notes: &[u8]) -> String {
+    if notes.is_empty() {
+        return "—".to_string();
+    }
+    notes
+        .iter()
+        .map(|&note| midi_note_name(note))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// "kick-L → kick · kick-R → kick · OH_L → bus (main)" for the channel map.
+fn channel_text(assignments: &[crate::engine::ChannelAssignment]) -> String {
+    if assignments.is_empty() {
+        return "—".to_string();
+    }
+    assignments
+        .iter()
+        .map(|map| {
+            let main = if map.is_main { " (main)" } else { "" };
+            format!("{} → {}{}", map.in_name, map.out_name, main)
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Converts a MIDI note number to a note name like "C3" or "A#2".
+fn midi_note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = (note / 12).saturating_sub(1);
+    format!("{}{}", NAMES[(note % 12) as usize], octave)
+}
+
+fn draw_header(ui: &mut Ui, _setter: &ParamSetter, state: &mut EditorState, rect: Rect) {
     let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER_HEIGHT));
     let center_y = header.center().y;
 
@@ -267,7 +364,7 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
         TEXT_DIM,
     );
 
-    // Separator
+    // Separator pill
     ui.painter().rect_filled(
         Rect::from_min_size(
             pos2(rect.left() + 196.0, header.top() + 7.0),
@@ -277,72 +374,35 @@ fn draw_header(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, rect:
         INDICATOR,
     );
 
-    // Number of visible channel strips
-    draw_strips_count(
-        ui,
-        setter,
-        state,
-        pos2(rect.left() + 210.0, header.top() + 10.0),
-    );
-
+    draw_mappings_button(ui, state, pos2(rect.left() + 210.0, header.top() + 10.0));
     draw_load_kit(ui, state, rect);
 }
 
-/// A compact drag value for the number of visible channel strips.
-fn draw_strips_count(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, origin: Pos2) {
-    ui.painter().text(
-        origin,
-        Align2::LEFT_CENTER,
-        "STRIPS",
-        FontId::proportional(9.0),
-        TEXT_DIM,
-    );
-
-    let pill = Rect::from_min_size(pos2(origin.x + 44.0, origin.y), vec2(40.0, 22.0));
-    let response = ui.interact(
-        pill,
-        ui.id().with("dizmo-num-strips"),
-        Sense::click_and_drag(),
-    );
-
-    if response.drag_started() {
-        setter.begin_set_parameter(&state.params.num_strips);
-    }
-    if response.dragged() {
-        let delta = response.drag_delta().x;
-        let current = state.params.num_strips.value();
-        let value = (current as f32 + delta * 0.2)
-            .round()
-            .clamp(1.0, NUM_CHANNELS as f32) as i32;
-        if value != current {
-            setter.set_parameter(&state.params.num_strips, value);
-        }
-    }
-    if response.drag_stopped() {
-        setter.end_set_parameter(&state.params.num_strips);
-    }
-    if response.double_clicked() {
-        setter.begin_set_parameter(&state.params.num_strips);
-        setter.set_parameter(&state.params.num_strips, NUM_CHANNELS as i32);
-        setter.end_set_parameter(&state.params.num_strips);
-    }
-
-    ui.painter().rect_filled(pill, 4.0, FIELD_BG);
-    ui.painter().rect_stroke(
-        pill,
-        4.0,
-        Stroke::new(1.0, FIELD_BORDER),
-        StrokeKind::Inside,
-    );
+/// The Mappings button that opens the MIDI map / channel assignment dialog.
+fn draw_mappings_button(ui: &mut Ui, state: &mut EditorState, origin: Pos2) {
+    let pill = Rect::from_min_size(origin, vec2(76.0, 22.0));
+    let response = ui.interact(pill, ui.id().with("dizmo-mappings"), Sense::click());
+    let hovered = response.hovered();
+    let fill = if hovered { FIELD_HOVER } else { FIELD_BG };
+    let stroke = if state.show_mappings {
+        ACCENT
+    } else {
+        FIELD_BORDER
+    };
+    ui.painter().rect_filled(pill, 4.0, fill);
+    ui.painter()
+        .rect_stroke(pill, 4.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
     ui.painter().text(
         pill.center(),
         Align2::CENTER_CENTER,
-        format!("{}", state.params.num_strips.value()),
-        FontId::proportional(10.0),
+        "MAPPINGS",
+        FontId::proportional(9.0),
         TEXT,
     );
-    let _ = response
-        .on_hover_text("Number of visible channel strips · drag to change, double-click to reset");
+    if response.clicked() {
+        state.show_mappings = !state.show_mappings;
+    }
+    let _ = response.on_hover_text("Show MIDI note and channel mappings");
 }
 
 /// The kit load button and current kit status at the right end of the header.
@@ -354,11 +414,11 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
                 KitStatus::Loaded {
                     name,
                     channels,
-                    notes,
+                    mappings,
                 } => LoadStatus::Loaded {
                     name,
                     channels,
-                    notes,
+                    mappings,
                 },
                 KitStatus::Failed(message) => LoadStatus::Failed(message),
                 KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },

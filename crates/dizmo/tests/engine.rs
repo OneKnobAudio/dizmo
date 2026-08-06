@@ -167,30 +167,6 @@ const TWO_CHANNEL_MIDIMAP: &str = r#"<midimap>
 "#;
 
 #[test]
-fn maps_midi_notes_to_their_output_channels() {
-    let dir = setup(
-        "notes-per-channel",
-        TWO_CHANNEL_DRUMKIT,
-        &[
-            ("inst_kick.xml", INST_KICK),
-            ("inst_snare.xml", INST_SNARE),
-            ("midimap.xml", TWO_CHANNEL_MIDIMAP),
-        ],
-        &[
-            ("kick.wav", 1, &[1000, 2000]),
-            ("snare.wav", 1, &[4000, 5000]),
-        ],
-    );
-    let (kit, bank, midimap) = load(&dir);
-    let engine = Engine::new(kit, bank, midimap);
-
-    // Note 36 and 35 both trigger the Kick; note 38 the Snare.
-    assert_eq!(engine.notes_per_channel(), vec![vec![35, 36], vec![38]]);
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
 fn maps_instruments_to_their_output_channels() {
     let dir = setup(
         "instruments-per-channel",

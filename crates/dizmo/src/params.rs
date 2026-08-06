@@ -23,10 +23,6 @@ pub struct DizmoParams {
     #[persist = "editor-state"]
     pub editor_state: Arc<EguiState>,
 
-    /// Number of visible channel strips.
-    #[id = "num-strips"]
-    pub num_strips: IntParam,
-
     /// One set of parameters per channel strip.
     #[nested(array)]
     pub channels: [ChannelParams; NUM_CHANNELS],
@@ -34,7 +30,7 @@ pub struct DizmoParams {
 
 #[derive(Params)]
 pub struct ChannelParams {
-    /// Volume fader: 0 dB center, -12 dB .. +12 dB.
+    /// Volume fader: 0 dB center, -18 dB .. +6 dB.
     #[id = "fader"]
     pub fader: FloatParam,
 
@@ -54,9 +50,9 @@ fn fader_param(name: &str) -> FloatParam {
         name,
         util::db_to_gain(0.0),
         FloatRange::SymmetricalSkewed {
-            min: util::db_to_gain(-12.0),
-            max: util::db_to_gain(12.0),
-            factor: FloatRange::gain_skew_factor(-12.0, 12.0),
+            min: util::db_to_gain(-18.0),
+            max: util::db_to_gain(6.0),
+            factor: FloatRange::gain_skew_factor(-18.0, 6.0),
             center: util::db_to_gain(0.0),
         },
     )
@@ -101,14 +97,6 @@ impl Default for DizmoParams {
     fn default() -> Self {
         Self {
             editor_state: crate::ui::default_editor_state(),
-            num_strips: IntParam::new(
-                "Channels",
-                NUM_CHANNELS as i32,
-                IntRange::Linear {
-                    min: 1,
-                    max: NUM_CHANNELS as i32,
-                },
-            ),
             channels: std::array::from_fn(ChannelParams::new),
         }
     }

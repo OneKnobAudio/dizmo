@@ -6,6 +6,7 @@ use crate::ui::{
 };
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::prelude::*;
+use std::sync::atomic::Ordering;
 
 /// Width of one channel strip card.
 pub const STRIP_WIDTH: f32 = 128.0;
@@ -43,20 +44,8 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         TEXT,
     );
 
-    // --- MIDI note indicator (from the loaded kit's midimap) ---
-    let note_y = inner.top() + 30.0;
-    if let Some(note_label) = midi_note_label(state, index) {
-        ui.painter().text(
-            pos2(center_x, note_y),
-            Align2::CENTER_CENTER,
-            note_label,
-            FontId::proportional(9.0),
-            TEXT_DIM,
-        );
-    }
-
     // --- Solo / Mute ---
-    let button_y = inner.top() + 55.0;
+    let button_y = inner.top() + 36.0;
     let button_gap = 6.0;
     let button_width = (inner.width() - button_gap) / 2.0;
     let solo_rect = Rect::from_min_size(pos2(inner.left(), button_y), vec2(button_width, 24.0));
@@ -133,7 +122,15 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         pos2(inner.left(), fader_top),
         pos2(inner.right(), inner.bottom()),
     );
-    show_fader(ui, setter, &params.channels[index].fader, index, fader_rect);
+    let level = f32::from_bits(state.levels[index].load(Ordering::Relaxed));
+    show_fader(
+        ui,
+        setter,
+        &params.channels[index].fader,
+        index,
+        fader_rect,
+        level,
+    );
 }
 
 /// A small rounded toggle button drawn manually.
@@ -185,51 +182,5 @@ fn channel_indicator_label(state: &EditorState, index: usize) -> String {
             .cloned()
             .unwrap_or_else(|| format!("{}", index + 1)),
         _ => format!("{}", index + 1),
-    }
-}
-
-/// The MIDI note name(s) mapped to this channel by the loaded midimap, as a
-/// compact "C1" or "C1 D1" label; `None` when no kit is loaded or the channel
-/// is unmapped.
-fn midi_note_label(state: &EditorState, index: usize) -> Option<String> {
-    let notes = match &state.load_status {
-        LoadStatus::Loaded { notes, .. } => notes.get(index)?,
-        _ => return None,
-    };
-    if notes.is_empty() {
-        return None;
-    }
-    Some(
-        notes
-            .iter()
-            .map(|&note| midi_note_name(note))
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
-}
-
-/// The note name for a MIDI note, with middle C (60) labelled C3 — the same
-/// convention most drum software uses, so a GM kick (36) reads as C1.
-fn midi_note_name(note: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let octave = (note / 12) as i8 - 2;
-    format!("{}{}", NAMES[(note % 12) as usize], octave)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::midi_note_name;
-
-    #[test]
-    fn midi_note_names_use_the_drum_convention() {
-        assert_eq!(midi_note_name(35), "B0");
-        assert_eq!(midi_note_name(36), "C1");
-        assert_eq!(midi_note_name(38), "D1");
-        assert_eq!(midi_note_name(60), "C3");
-        assert_eq!(midi_note_name(61), "C#3");
-        assert_eq!(midi_note_name(0), "C-2");
-        assert_eq!(midi_note_name(127), "G8");
     }
 }
