@@ -15,7 +15,12 @@ pub const STRIP_WIDTH: f32 = 128.0;
 pub const STRIP_HEIGHT: f32 = 460.0;
 
 /// Width of the trigger indicator bar on the right edge of a strip.
-const TRIGGER_BAR_WIDTH: f32 = 14.0;
+const TRIGGER_BAR_WIDTH: f32 = 20.0;
+
+/// Soft halo drawn around the trigger bar while it is lit.
+fn trigger_glow() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xff, 0xc0, 0x4d, 70)
+}
 
 /// Draws a single channel strip matching the mockup layout:
 /// number badge, editable name, solo/mute, choke assign, pan knob and vertical fader.
@@ -135,18 +140,20 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         level,
     );
 
-    // --- Trigger indicator: a tall bar on the right edge that lights up at a
-    // fixed brightness whenever a note triggers this channel. It depends only
-    // on whether a hit happened (not on the channel's volume) and fades back
-    // out over time.
+    // --- Trigger indicator: a tall bar on the strip's right edge that lights
+    // up at a fixed brightness whenever a note triggers this channel. It
+    // depends only on whether a hit happened (not on the channel's volume)
+    // and fades back out over time.
     let trigger_bar = Rect::from_min_max(
-        pos2(inner.right() - TRIGGER_BAR_WIDTH, fader_top),
-        pos2(inner.right(), inner.bottom()),
+        pos2(card_rect.right() - TRIGGER_BAR_WIDTH - 3.0, fader_top),
+        pos2(card_rect.right() - 3.0, inner.bottom()),
     );
-    ui.painter().rect_filled(trigger_bar, 4.0, TRACK_BG);
+    ui.painter().rect_filled(trigger_bar, 6.0, TRACK_BG);
     let trigger = f32::from_bits(state.triggers[index].load(Ordering::Relaxed));
     if trigger > 0.01 {
-        ui.painter().rect_filled(trigger_bar, 4.0, TRIGGER_ACTIVE);
+        ui.painter()
+            .rect_filled(trigger_bar.expand(6.0), 10.0, trigger_glow());
+        ui.painter().rect_filled(trigger_bar, 6.0, TRIGGER_ACTIVE);
     }
 }
 

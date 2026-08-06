@@ -228,23 +228,27 @@ fn channel_without_main_instrument_is_unmapped() {
 }
 
 #[test]
-fn mappings_include_only_main_channel_entries() {
+fn mappings_include_only_the_primary_channel() {
     let drumkit = r#"<drumkit version="2.0">
   <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
   <channels>
     <channel name="Kick"/>
+    <channel name="AmbL"/>
+    <channel name="AmbR"/>
     <channel name="Room"/>
   </channels>
   <instruments>
     <instrument name="Kick" file="inst_kick.xml">
       <channelmap in="Kick" out="Kick" main="true"/>
-      <channelmap in="Kick" out="Room"/>
+      <channelmap in="AmbL" out="AmbL" main="true"/>
+      <channelmap in="AmbR" out="AmbR" main="true"/>
+      <channelmap in="Room" out="Room"/>
     </instrument>
   </instruments>
 </drumkit>
 "#;
     let dir = setup(
-        "mappings-main-only",
+        "mappings-primary",
         drumkit,
         &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
         &[("kick.wav", 1, &[1000, 2000])],
@@ -254,11 +258,45 @@ fn mappings_include_only_main_channel_entries() {
 
     let mappings = engine.mappings();
     assert_eq!(mappings.len(), 1);
-    // The non-main "Kick -> Room" bleed entry is excluded.
+    // Only the primary mapping is reported: the main entry whose input
+    // channel matches the instrument name, not the ambient mains or bleed.
     assert_eq!(mappings[0].channel_map.len(), 1);
     assert_eq!(mappings[0].channel_map[0].in_name, "Kick");
     assert_eq!(mappings[0].channel_map[0].out_name, "Kick");
     assert!(mappings[0].channel_map[0].is_main);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn mappings_fall_back_when_no_main_is_declared() {
+    let drumkit = r#"<drumkit version="2.0">
+  <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
+  <channels>
+    <channel name="Kick"/>
+    <channel name="Room"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick"/>
+      <channelmap in="Kick" out="Room"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+    let dir = setup(
+        "mappings-fallback",
+        drumkit,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000, 2000])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let engine = Engine::new(kit, bank, midimap);
+
+    let mappings = engine.mappings();
+    assert_eq!(mappings[0].channel_map.len(), 1);
+    assert_eq!(mappings[0].channel_map[0].in_name, "Kick");
+    assert_eq!(mappings[0].channel_map[0].out_name, "Kick");
 
     std::fs::remove_dir_all(&dir).ok();
 }

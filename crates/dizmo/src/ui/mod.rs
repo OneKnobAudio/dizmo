@@ -40,7 +40,7 @@ pub(crate) const SOLO_ACTIVE: Color32 = Color32::from_rgb(0x9a, 0x8a, 0x3c);
 pub(crate) const MUTE_ACTIVE: Color32 = Color32::from_rgb(0xb0, 0x4a, 0x46);
 /// The trigger indicator bar: a note hit lights the channel regardless of its
 /// volume. Bright amber, distinct from the blue fader fill.
-pub(crate) const TRIGGER_ACTIVE: Color32 = Color32::from_rgb(0xe8, 0x9a, 0x3c);
+pub(crate) const TRIGGER_ACTIVE: Color32 = Color32::from_rgb(0xff, 0xc0, 0x4d);
 
 /// The header bar height in the mockup.
 const HEADER_HEIGHT: f32 = 42.0;
@@ -448,6 +448,14 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
                 KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },
             };
         }
+    }
+
+    // egui only redraws on input, so a kit loading in the background would
+    // never be shown. Keep repainting while the load runs so the final
+    // status arrives and the channel names / header update promptly.
+    if matches!(state.load_status, LoadStatus::Loading { .. }) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(50));
     }
 
     let center_y = rect.top() + HEADER_HEIGHT / 2.0;

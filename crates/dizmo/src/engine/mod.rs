@@ -74,8 +74,7 @@ pub struct InstrumentMapping {
     pub instrument: String,
     /// MIDI notes from the midimap that trigger this instrument.
     pub notes: Vec<u8>,
-    /// Channelmap entries: instrument channel -> kit output channel. Only
-    /// entries marked `main` are included.
+    /// The instrument's primary channel mapping (at most one entry).
     pub channel_map: Vec<ChannelAssignment>,
 }
 
@@ -311,7 +310,10 @@ impl Engine {
     }
 
     /// The per-instrument MIDI and channel mappings, shown in the editor's
-    /// Mappings dialog. Computed once at load time.
+    /// Mappings dialog. Computed once at load time. Each instrument gets a
+    /// single primary channel mapping: the `main` entry whose input channel
+    /// shares the instrument's name, falling back to the first `main` entry,
+    /// then the first declared entry for kits that do not use `main`.
     pub fn mappings(&self) -> Vec<InstrumentMapping> {
         self.kit
             .instruments
@@ -324,16 +326,22 @@ impl Engine {
                     .filter(|entry| entry.instrument == instrument.name)
                     .map(|entry| entry.note)
                     .collect();
-                let channel_map = instrument
-                    .channel_map
-                    .iter()
-                    .filter(|map| map.is_main)
-                    .map(|map| ChannelAssignment {
-                        in_name: map.in_name.clone(),
-                        out_name: map.out_name.clone(),
-                        is_main: map.is_main,
-                    })
-                    .collect();
+                let channel_map = {
+                    let primary = instrument
+                        .channel_map
+                        .iter()
+                        .find(|map| map.is_main && map.in_name == instrument.name)
+                        .or_else(|| instrument.channel_map.iter().find(|map| map.is_main))
+                        .or_else(|| instrument.channel_map.first());
+                    primary
+                        .map(|map| ChannelAssignment {
+                            in_name: map.in_name.clone(),
+                            out_name: map.out_name.clone(),
+                            is_main: map.is_main,
+                        })
+                        .into_iter()
+                        .collect()
+                };
                 InstrumentMapping {
                     instrument: instrument.name.clone(),
                     notes,
