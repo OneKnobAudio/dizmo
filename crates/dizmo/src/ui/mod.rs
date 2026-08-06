@@ -103,8 +103,9 @@ pub enum LoadStatus {
     },
     Loaded {
         name: String,
+        /// The kit's channel names from its `<channels>` section.
+        channels: Vec<String>,
         notes: Vec<Vec<u8>>,
-        instruments: Vec<Option<String>>,
     },
     Failed(String),
 }
@@ -352,12 +353,12 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
             state.load_status = match status {
                 KitStatus::Loaded {
                     name,
+                    channels,
                     notes,
-                    instruments,
                 } => LoadStatus::Loaded {
                     name,
+                    channels,
                     notes,
-                    instruments,
                 },
                 KitStatus::Failed(message) => LoadStatus::Failed(message),
                 KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },

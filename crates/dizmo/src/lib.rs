@@ -24,8 +24,9 @@ pub(crate) enum KitStatus {
     /// midimap that trigger sound on it.
     Loaded {
         name: String,
+        /// The kit's channel names from its `<channels>` section.
+        channels: Vec<String>,
         notes: Vec<Vec<u8>>,
-        instruments: Vec<Option<String>>,
     },
     /// The kit failed to load; carries the error message.
     Failed(String),
@@ -324,12 +325,12 @@ macro_rules! impl_dizmo_plugin {
                                 let name = engine.kit_name().to_string();
                                 eprintln!("[dizmo] kit '{name}' loaded in {:?}", start.elapsed());
                                 let notes = engine.notes_per_channel();
-                                let instruments = engine.instruments_per_channel();
+                                let channels = engine.channel_names();
                                 let _ = engine_tx.send(Ok(engine));
                                 let _ = status_tx.send(KitStatus::Loaded {
                                     name,
+                                    channels,
                                     notes,
-                                    instruments,
                                 });
                             }
                             Ok(Err(err)) => {

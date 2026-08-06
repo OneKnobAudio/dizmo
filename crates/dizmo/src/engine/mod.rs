@@ -198,7 +198,7 @@ impl Engine {
                 continue;
             };
             let instrument = &self.kit.instruments[instrument_index];
-            for map in &instrument.channel_map {
+            for map in instrument.channel_map.iter().filter(|map| map.is_main) {
                 let Some(&output) = self.output_index.get(&map.out_name) else {
                     continue;
                 };
@@ -214,24 +214,30 @@ impl Engine {
     }
 
     /// The instrument assigned to each kit output channel via its channelmap,
-    /// preferring the `main` channelmap entry and falling back to the first
-    /// instrument routed to that channel. `None` for channels no instrument
-    /// routes to. Shown in the editor strips when a kit is loaded.
+    /// considering only `main` channelmap entries. `None` for channels no
+    /// instrument routes its main channel to. Shown in the editor strips when a
+    /// kit is loaded.
     pub fn instruments_per_channel(&self) -> Vec<Option<String>> {
         let mut main = vec![None; self.kit.channels.len()];
-        let mut first = vec![None; self.kit.channels.len()];
         for instrument in &self.kit.instruments {
-            for map in &instrument.channel_map {
+            for map in instrument.channel_map.iter().filter(|map| map.is_main) {
                 let Some(&output) = self.output_index.get(&map.out_name) else {
                     continue;
                 };
-                first[output].get_or_insert_with(|| instrument.name.clone());
-                if map.is_main {
-                    main[output].get_or_insert_with(|| instrument.name.clone());
-                }
+                main[output].get_or_insert_with(|| instrument.name.clone());
             }
         }
-        main.into_iter().zip(first).map(|(m, f)| m.or(f)).collect()
+        main
+    }
+
+    /// The kit's channel names, in output order, exactly as declared in the
+    /// drumkit's `<channels>` section. Shown in the editor strips.
+    pub fn channel_names(&self) -> Vec<String> {
+        self.kit
+            .channels
+            .iter()
+            .map(|channel| channel.name.clone())
+            .collect()
     }
 
     /// The number of currently active voices (useful for debugging/tests).
@@ -319,6 +325,7 @@ impl Engine {
                 let output = instrument
                     .channel_map
                     .iter()
+                    .filter(|map| map.is_main)
                     .find(|map| map.in_name == audio.channel)
                     .and_then(|map| self.output_index.get(&map.out_name))
                     .copied()?;

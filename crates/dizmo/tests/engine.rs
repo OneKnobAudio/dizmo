@@ -217,7 +217,7 @@ fn maps_instruments_to_their_output_channels() {
 }
 
 #[test]
-fn channel_without_main_instrument_falls_back_to_first_mapped() {
+fn channel_without_main_instrument_is_unmapped() {
     let drumkit = r#"<drumkit version="2.0">
   <metadata><title>T</title><description>d</description></metadata>
   <channels>
@@ -233,7 +233,7 @@ fn channel_without_main_instrument_falls_back_to_first_mapped() {
 </drumkit>
 "#;
     let dir = setup(
-        "instruments-per-channel-fallback",
+        "instruments-per-channel-main-only",
         drumkit,
         &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
         &[("kick.wav", 1, &[1000, 2000])],
@@ -241,10 +241,11 @@ fn channel_without_main_instrument_falls_back_to_first_mapped() {
     let (kit, bank, midimap) = load(&dir);
     let engine = Engine::new(kit, bank, midimap);
 
-    // "Room" has no main instrument, so it falls back to the first routed one.
+    // "Room" only has a non-main bleed channelmap entry, so it gets no
+    // instrument; only the main "Kick" output is mapped.
     assert_eq!(
         engine.instruments_per_channel(),
-        vec![Some("Kick".to_string()), Some("Kick".to_string())]
+        vec![Some("Kick".to_string()), None]
     );
 
     std::fs::remove_dir_all(&dir).ok();

@@ -175,5 +175,4 @@ fn mixdown_applies_constant_power_pan_law() {
     mixdown_to_stereo(&scratch, 1, 1, &mut left, &mut right, &params.channels);
     assert!((left[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
     assert!((right[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-
 }

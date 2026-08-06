@@ -4,9 +4,7 @@ use crate::ui::{
     CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, LoadStatus, MUTE_ACTIVE,
     SOLO_ACTIVE, TEXT, TEXT_DIM,
 };
-use egui::{
-    Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
-};
+use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::prelude::*;
 
 /// Width of one channel strip card.
@@ -176,14 +174,15 @@ fn toggle_bool(setter: &ParamSetter, param: &BoolParam) {
     setter.end_set_parameter(param);
 }
 
-/// The instrument name shown in the channel indicator for a loaded kit
-/// (falling back to the channel number when the channel is unmapped), or the
-/// plain channel number while no kit is loaded.
+/// The label shown in the channel indicator: the kit's channel name from its
+/// `<channels>` section when a kit is loaded, otherwise the plain channel
+/// number.
 fn channel_indicator_label(state: &EditorState, index: usize) -> String {
     match &state.load_status {
-        LoadStatus::Loaded { instruments, .. } => instruments
+        LoadStatus::Loaded { channels, .. } => channels
             .get(index)
-            .and_then(|name| name.clone())
+            .filter(|name| !name.is_empty())
+            .cloned()
             .unwrap_or_else(|| format!("{}", index + 1)),
         _ => format!("{}", index + 1),
     }
