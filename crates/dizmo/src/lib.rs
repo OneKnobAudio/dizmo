@@ -61,6 +61,11 @@ struct AudioCore {
     old_engine_tx: Option<crossbeam_channel::Sender<Engine>>,
     /// Receives load status messages; moved into the editor when it is created.
     status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    /// Sends load status messages to the editor. A clone is also held by the
+    /// loader thread; this one lets the synchronous `load_kit` path (e.g. the
+    /// `DIZMO_KIT` environment variable during initialize) notify the editor
+    /// too, so the header and strips reflect a kit loaded outside the button.
+    status_tx: Option<crossbeam_channel::Sender<KitStatus>>,
     /// The sample rate the loader thread resamples to; set in `initialize`.
     host_sample_rate: Arc<AtomicU32>,
     /// Per-channel linear peak levels (as `f32` bits), written here each block
@@ -81,6 +86,7 @@ impl AudioCore {
             engine_rx: None,
             old_engine_tx: None,
             status_rx: None,
+            status_tx: None,
             host_sample_rate: Arc::new(AtomicU32::new(0)),
             levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
             triggers: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
@@ -163,6 +169,19 @@ impl AudioCore {
             if mask & (1 << index) != 0 {
                 self.triggers[index].store(1.0f32.to_bits(), Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Tells the editor that `engine` is the current kit, so the header and
+    /// strips show its name and channel names even when it was loaded outside
+    /// the LOAD KIT button flow. No-op when no editor was ever wired up.
+    fn notify_loaded(&self, engine: &Engine) {
+        if let Some(status_tx) = &self.status_tx {
+            let _ = status_tx.send(KitStatus::Loaded {
+                name: engine.kit_name().to_string(),
+                channels: engine.channel_names(),
+                mappings: engine.mappings(),
+            });
         }
     }
 }
@@ -290,6 +309,7 @@ macro_rules! impl_dizmo_plugin {
             ) -> Result<(), engine::EngineLoadError> {
                 let mut engine = engine::load_engine(kit_path, Some(self.core.sample_rate as u32))?;
                 engine.set_sample_rate(self.core.sample_rate);
+                self.core.notify_loaded(&engine);
                 self.core.engine = Some(engine);
                 Ok(())
             }
@@ -338,6 +358,7 @@ macro_rules! impl_dizmo_plugin {
                 self.core.engine_rx = Some(engine_rx);
                 self.core.old_engine_tx = Some(old_engine_tx);
                 self.core.status_rx = Some(status_rx);
+                self.core.status_tx = Some(status_tx.clone());
 
                 // A dedicated thread drops retired engines so deallocation never
                 // happens on the audio thread.

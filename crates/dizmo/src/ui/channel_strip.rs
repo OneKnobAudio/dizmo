@@ -2,7 +2,7 @@ use crate::ui::fader::show_fader;
 use crate::ui::knob::{KNOB_RADIUS, show_knob};
 use crate::ui::{
     CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, LoadStatus, MUTE_ACTIVE,
-    SOLO_ACTIVE, TEXT, TEXT_DIM, TRACK_BG, TRIGGER_ACTIVE,
+    SOLO_ACTIVE, TEXT, TEXT_DIM, TRIGGER_ACTIVE, TRIGGER_DIM,
 };
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nice_plug::prelude::*;
@@ -14,12 +14,13 @@ pub const STRIP_WIDTH: f32 = 128.0;
 /// Height of one channel strip card.
 pub const STRIP_HEIGHT: f32 = 460.0;
 
-/// Width of the trigger indicator bar on the right edge of a strip.
-const TRIGGER_BAR_WIDTH: f32 = 20.0;
+/// Width of the right-edge zone reserved for the trigger indicator circle,
+/// kept clear of the fader track and its dB readout.
+const INDICATOR_ZONE_WIDTH: f32 = 22.0;
 
-/// Soft halo drawn around the trigger bar while it is lit.
+/// Soft halo drawn around the trigger circle while it is lit.
 fn trigger_glow() -> Color32 {
-    Color32::from_rgba_unmultiplied(0xff, 0xc0, 0x4d, 70)
+    Color32::from_rgba_unmultiplied(0xff, 0xd9, 0x6b, 110)
 }
 
 /// Draws a single channel strip matching the mockup layout:
@@ -128,7 +129,7 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
     // --- Vertical fader ---
     let fader_rect = Rect::from_min_max(
         pos2(inner.left(), fader_top),
-        pos2(inner.right() - TRIGGER_BAR_WIDTH - 4.0, inner.bottom()),
+        pos2(inner.right() - INDICATOR_ZONE_WIDTH - 4.0, inner.bottom()),
     );
     let level = f32::from_bits(state.levels[index].load(Ordering::Relaxed));
     show_fader(
@@ -140,21 +141,31 @@ pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, in
         level,
     );
 
-    // --- Trigger indicator: a tall bar on the strip's right edge that lights
-    // up at a fixed brightness whenever a note triggers this channel. It
-    // depends only on whether a hit happened (not on the channel's volume)
-    // and fades back out over time.
-    let trigger_bar = Rect::from_min_max(
-        pos2(card_rect.right() - TRIGGER_BAR_WIDTH - 3.0, fader_top),
-        pos2(card_rect.right() - 3.0, inner.bottom()),
+    // --- Trigger indicator: a circle in the zone to the right of the fader
+    // that blinks brightly while a note triggers this channel. It depends only
+    // on whether a hit happened (not the channel's volume) and stops blinking
+    // once the trigger activity has decayed away.
+    let indicator_center = pos2(
+        card_rect.right() - 3.0 - INDICATOR_ZONE_WIDTH / 2.0,
+        (fader_top + inner.bottom()) / 2.0,
     );
-    ui.painter().rect_filled(trigger_bar, 6.0, TRACK_BG);
     let trigger = f32::from_bits(state.triggers[index].load(Ordering::Relaxed));
-    if trigger > 0.01 {
+    let lit = trigger > 0.01;
+    let blink_on = lit && {
+        let now = ui.input(|input| input.time);
+        (now * 5.0).fract() < 0.5
+    };
+    if blink_on {
         ui.painter()
-            .rect_filled(trigger_bar.expand(6.0), 10.0, trigger_glow());
-        ui.painter().rect_filled(trigger_bar, 6.0, TRIGGER_ACTIVE);
+            .circle_filled(indicator_center, 11.0, trigger_glow());
+        ui.painter()
+            .circle_filled(indicator_center, 7.0, TRIGGER_ACTIVE);
+    } else {
+        ui.painter()
+            .circle_filled(indicator_center, 7.0, TRIGGER_DIM);
     }
+    ui.painter()
+        .circle_stroke(indicator_center, 7.0, Stroke::new(1.0, CARD_BORDER));
 }
 
 /// A small rounded toggle button drawn manually.

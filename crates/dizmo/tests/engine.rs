@@ -57,6 +57,14 @@ fn approx(left: f32, right: f32) -> bool {
     (left - right).abs() < 1e-6
 }
 
+/// Expected gain of a fresh voice's 1 ms fade-in at `frame` (0-based), given
+/// the engine sample rate. The ramp starts at `1/attack_frames` on the first
+/// frame and reaches full gain after one attack.
+fn attack_gain(frame: usize, sample_rate: f32) -> f32 {
+    let attack_frames = 1.0 / 1000.0 * sample_rate;
+    ((frame as f32 + 1.0) / attack_frames).clamp(0.0, 1.0)
+}
+
 fn write_wav(path: &Path, channels: u16, samples: &[i16]) {
     let spec = hound::WavSpec {
         channels,
@@ -123,9 +131,11 @@ fn plays_sample_into_its_output_channel() {
     let out = run(&mut engine, 1, 10);
 
     let kick = &out[0];
-    assert!(approx(kick[0], 1000.0 / 32768.0));
-    assert!(approx(kick[1], 2000.0 / 32768.0));
-    assert!(approx(kick[2], 3000.0 / 32768.0));
+    // The new voice fades in over 1 ms (44.1 frames at 44.1 kHz), so the
+    // first frames ramp up instead of stepping straight to full gain.
+    assert!(approx(kick[0], 1000.0 / 32768.0 * attack_gain(0, 44100.0)));
+    assert!(approx(kick[1], 2000.0 / 32768.0 * attack_gain(1, 44100.0)));
+    assert!(approx(kick[2], 3000.0 / 32768.0 * attack_gain(2, 44100.0)));
     assert_eq!(kick[3], 0.0);
     assert_eq!(engine.active_voices(), 0);
 }
@@ -294,9 +304,9 @@ fn mappings_fall_back_when_no_main_is_declared() {
     let engine = Engine::new(kit, bank, midimap);
 
     let mappings = engine.mappings();
-    assert_eq!(mappings[0].channel_map.len(), 1);
-    assert_eq!(mappings[0].channel_map[0].in_name, "Kick");
-    assert_eq!(mappings[0].channel_map[0].out_name, "Kick");
+    // Without a `main` channelmap entry, the instrument exposes no channel
+    // mapping: only its MIDI notes are reported.
+    assert_eq!(mappings[0].channel_map.len(), 0);
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -327,12 +337,12 @@ fn selects_velocity_layer_by_power() {
     let mut soft = Engine::new(kit.clone(), bank.clone(), midimap.clone());
     soft.note_on(36, 32);
     let out = run(&mut soft, 1, 4);
-    assert!(approx(out[0][0], 10.0 / 32768.0));
+    assert!(approx(out[0][0], 10.0 / 32768.0 * attack_gain(0, 44100.0)));
 
     let mut loud = Engine::new(kit, bank, midimap);
     loud.note_on(36, 127);
     let out = run(&mut loud, 1, 4);
-    assert!(approx(out[0][0], 100.0 / 32768.0));
+    assert!(approx(out[0][0], 100.0 / 32768.0 * attack_gain(0, 44100.0)));
 }
 
 #[test]
@@ -377,14 +387,14 @@ fn choke_cuts_target_instantly_when_choketime_is_zero() {
 
     engine.note_on(46, 127);
     let out = run(&mut engine, 2, 2);
-    assert!(approx(out[0][0], 111.0 / 32768.0));
-    assert!(approx(out[0][1], 222.0 / 32768.0));
+    assert!(approx(out[0][0], 111.0 / 32768.0 * attack_gain(0, 44100.0)));
+    assert!(approx(out[0][1], 222.0 / 32768.0 * attack_gain(1, 44100.0)));
 
     engine.note_on(42, 127);
     let out = run(&mut engine, 2, 2);
     assert_eq!(out[0][0], 0.0);
     assert_eq!(out[0][1], 0.0);
-    assert!(approx(out[1][0], 777.0 / 32768.0));
+    assert!(approx(out[1][0], 777.0 / 32768.0 * attack_gain(0, 44100.0)));
     assert_eq!(engine.active_voices(), 1);
 }
 
@@ -511,24 +521,26 @@ fn retrigger_fades_previous_voice_instead_of_cutting() {
     );
     let (kit, bank, midimap) = load(&dir);
     let mut engine = Engine::new(kit, bank, midimap);
-    // 2 kHz sample rate => the 1 ms retrigger fade is exactly 2 frames.
+    // 2 kHz sample rate => the 1 ms attack and the 1 ms retrigger fade are
+    // both exactly 2 frames (gains 0.5 then 1.0; 1.0 then 0.5).
     engine.set_sample_rate(2000.0);
 
     engine.note_on(36, 127);
     let out = run(&mut engine, 1, 1);
-    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    // The fresh voice's first frame is halfway through its fade-in.
+    assert!(approx(out[0][0], 500.0 / 32768.0));
     assert_eq!(engine.active_voices(), 1);
 
     engine.note_on(36, 127);
     let out = run(&mut engine, 1, 1);
-    // The fresh voice restarts from position 0; the previous voice is not cut
-    // but rings on its first fade frame (still full gain).
-    assert!(approx(out[0][0], (2000.0 + 1000.0) / 32768.0));
+    // The previous voice is at full gain on its first fade frame (s[1]);
+    // the fresh voice restarts from position 0, half-way through its fade-in.
+    assert!(approx(out[0][0], (2000.0 + 500.0) / 32768.0));
     assert_eq!(engine.active_voices(), 2);
 
     let out = run(&mut engine, 1, 4);
-    // The previous voice fades out over its 2 fade frames (gains 0.5, 0.0)
-    // while the fresh voice plays s[1..5] in full.
+    // The previous voice fades out over its 2 fade frames (gains 1.0, 0.0)
+    // while the fresh voice reaches full gain from frame 1 on.
     assert!(approx(out[0][0], (3000.0 * 0.5 + 2000.0) / 32768.0));
     assert!(approx(out[0][1], 3000.0 / 32768.0));
     assert!(approx(out[0][2], 4000.0 / 32768.0));
@@ -546,23 +558,58 @@ fn mid_block_retrigger_restarts_sample_from_beginning() {
     );
     let (kit, bank, midimap) = load(&dir);
     let mut engine = Engine::new(kit, bank, midimap);
+    // 2 kHz sample rate => the 1 ms attack and 1 ms retrigger fade are both
+    // exactly 2 frames (gains 0.5 then 1.0; 1.0 then 0.5).
+    engine.set_sample_rate(2000.0);
     let mut buffers = vec![vec![0.0; 8]; 1];
 
-    // First hit at frame 1: sample renders from s[0].
+    // First hit at frame 1: sample renders from s[0], ramping over its 2-frame
+    // attack.
     engine.process(0, 1, &mut buffers);
     engine.note_on(36, 127);
     engine.process(1, 2, &mut buffers);
-    assert!(approx(buffers[0][1], 1000.0 / 32768.0));
+    assert!(approx(buffers[0][1], 500.0 / 32768.0));
     assert!(approx(buffers[0][2], 2000.0 / 32768.0));
 
-    // Retrigger at frame 4: the fresh voice restarts from s[0], while the
-    // previous voice plays out its one remaining frame (s[3]) at full gain on
-    // the first fade frame instead of being cut.
+    // Retrigger at frame 4: the fresh voice restarts from s[0] (still in its
+    // fade-in), while the previous voice plays out its one remaining frame
+    // (s[3]) at full gain on the first fade frame instead of being cut.
     engine.process(3, 1, &mut buffers);
     engine.note_on(36, 127);
     engine.process(4, 2, &mut buffers);
-    assert!(approx(buffers[0][4], 5000.0 / 32768.0));
+    assert!(approx(buffers[0][4], 4500.0 / 32768.0));
     assert!(approx(buffers[0][5], 2000.0 / 32768.0));
+    assert_eq!(engine.active_voices(), 1);
+}
+
+#[test]
+fn new_voices_fade_in_to_avoid_retrigger_click() {
+    // A sample that starts at full amplitude: an instant gain step at note-on
+    // would pop. The 1 ms attack ramps it in instead.
+    let dir = setup(
+        "attack",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[10000; 100])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+    // 2 kHz sample rate => the 1 ms attack is exactly 2 frames (gains 0.5, 1.0).
+    engine.set_sample_rate(2000.0);
+
+    engine.note_on(36, 127);
+    let out = run(&mut engine, 1, 4);
+    assert!(approx(out[0][0], 5000.0 / 32768.0));
+    assert!(approx(out[0][1], 10000.0 / 32768.0));
+    assert!(approx(out[0][2], 10000.0 / 32768.0));
+    assert!(approx(out[0][3], 10000.0 / 32768.0));
+
+    // A rapid retrigger starts a second voice from the same spot while the
+    // previous one fades out; both ramp in/out instead of stepping.
+    engine.note_on(36, 127);
+    let out = run(&mut engine, 1, 2);
+    assert!(approx(out[0][0], (10000.0 + 5000.0) / 32768.0));
+    assert!(approx(out[0][1], (5000.0 + 10000.0) / 32768.0));
     assert_eq!(engine.active_voices(), 1);
 }
 
@@ -635,12 +682,12 @@ fn voice_stealing_fades_the_oldest_instead_of_cutting() {
     // so all MAX_VOICES+1 voices are still present right after the hit.
     assert_eq!(engine.active_voices(), MAX_VOICES + 1);
 
-    // Frame 0: every voice, including the oldest, rings at full gain. An
-    // instant cut would have silenced the stolen voice here.
+    // Frame 0: every voice, including the oldest, rings at the first frame of
+    // its attack ramp. An instant cut would have silenced the stolen voice here.
     let out = run(&mut engine, 1, 1);
     assert!(approx(
         out[0][0],
-        (MAX_VOICES + 1) as f32 * 1000.0 / 32768.0
+        (MAX_VOICES + 1) as f32 * 1000.0 / 32768.0 * attack_gain(0, 44100.0)
     ));
 }
 
@@ -650,27 +697,31 @@ fn resampled_kit_plays_at_target_rate() {
         "resampled",
         DRUMKIT,
         &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
-        &[("kick.wav", 1, &[1000; 32])],
+        &[("kick.wav", 1, &[1000; 256])],
     );
     let mut engine = load_engine(dir.join("drumkit.xml"), Some(22050)).unwrap();
+    // The engine plays the resampled data 1:1, so its rate is the target rate.
+    engine.set_sample_rate(22050.0);
 
     engine.note_on(36, 127);
-    let out = run(&mut engine, 1, 32);
-    // 32 frames at 44.1 kHz were resampled down to 16 frames at 22.05 kHz.
-    // The FFT low-pass resampler is not sample-exact: allow 1% edge ripple
-    // around the constant and require exact silence after the sample ends.
+    let out = run(&mut engine, 1, 256);
+    // 256 frames at 44.1 kHz were resampled down to 128 frames at 22.05 kHz.
+    // The first ~22 frames are the 1 ms attack ramp; the steady-state region
+    // is the constant sample. The FFT low-pass resampler is not sample-exact:
+    // allow 1% edge ripple around the constant and require exact silence after
+    // the sample ends.
     let expected = 1000.0 / 32768.0;
-    for &sample in &out[0][..16] {
+    for &sample in &out[0][22..128] {
         assert!(
             (sample - expected).abs() < expected * 0.01,
             "resampled frame {sample} deviates too far from {expected}"
         );
     }
     assert!(
-        out[0][15] != 0.0,
-        "the resampled sample should be 16 frames long"
+        out[0][127] != 0.0,
+        "the resampled sample should be 128 frames long"
     );
-    assert!(out[0][16..].iter().all(|&sample| sample == 0.0));
+    assert!(out[0][128..].iter().all(|&sample| sample == 0.0));
     assert_eq!(engine.active_voices(), 0);
 }
 
@@ -696,10 +747,19 @@ fn note_triggered_mid_block_renders_at_its_offset() {
     assert_eq!(buffers[0][0], 0.0);
     assert_eq!(buffers[0][1], 0.0);
     assert_eq!(buffers[0][2], 0.0);
-    // The sample starts exactly at the note's offset, not at the block start.
-    assert!(approx(buffers[0][3], 1000.0 / 32768.0));
-    assert!(approx(buffers[0][4], 2000.0 / 32768.0));
-    assert!(approx(buffers[0][5], 3000.0 / 32768.0));
+    // The sample starts exactly at the note's offset, ramping in over 1 ms.
+    assert!(approx(
+        buffers[0][3],
+        1000.0 / 32768.0 * attack_gain(0, 44100.0)
+    ));
+    assert!(approx(
+        buffers[0][4],
+        2000.0 / 32768.0 * attack_gain(1, 44100.0)
+    ));
+    assert!(approx(
+        buffers[0][5],
+        3000.0 / 32768.0 * attack_gain(2, 44100.0)
+    ));
 }
 
 #[test]
@@ -765,7 +825,10 @@ fn load_engine_picks_up_convention_midimap() {
     assert_eq!(engine.active_voices(), 1);
 
     let out = run(&mut engine, 1, 3);
-    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(
+        out[0][0],
+        1000.0 / 32768.0 * attack_gain(0, 44100.0)
+    ));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -788,7 +851,10 @@ fn load_engine_picks_up_lowercase_convention_midimap() {
     assert_eq!(engine.active_voices(), 1);
 
     let out = run(&mut engine, 1, 3);
-    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(
+        out[0][0],
+        1000.0 / 32768.0 * attack_gain(0, 44100.0)
+    ));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -828,7 +894,10 @@ fn load_engine_picks_up_plain_midimap_without_variation() {
     assert_eq!(engine.active_voices(), 1);
 
     let out = run(&mut engine, 1, 3);
-    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(
+        out[0][0],
+        1000.0 / 32768.0 * attack_gain(0, 44100.0)
+    ));
 
     std::fs::remove_dir_all(&dir).ok();
 }

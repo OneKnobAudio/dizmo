@@ -15,6 +15,7 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
 pub mod channel_strip;
 pub mod fader;
@@ -38,9 +39,12 @@ pub(crate) const KNOB_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
 pub(crate) const INDICATOR: Color32 = Color32::from_rgb(0xe8, 0xec, 0xf1);
 pub(crate) const SOLO_ACTIVE: Color32 = Color32::from_rgb(0x9a, 0x8a, 0x3c);
 pub(crate) const MUTE_ACTIVE: Color32 = Color32::from_rgb(0xb0, 0x4a, 0x46);
-/// The trigger indicator bar: a note hit lights the channel regardless of its
-/// volume. Bright amber, distinct from the blue fader fill.
-pub(crate) const TRIGGER_ACTIVE: Color32 = Color32::from_rgb(0xff, 0xc0, 0x4d);
+/// The trigger indicator circle: a note hit lights the channel regardless of
+/// its volume. Bright amber, distinct from the blue fader fill.
+pub(crate) const TRIGGER_ACTIVE: Color32 = Color32::from_rgb(0xff, 0xd9, 0x6b);
+/// The trigger indicator's resting fill: a dark warm gray that stays visible
+/// against the card background while the channel is silent.
+pub(crate) const TRIGGER_DIM: Color32 = Color32::from_rgb(0x2e, 0x2a, 0x22);
 
 /// The header bar height in the mockup.
 const HEADER_HEIGHT: f32 = 42.0;
@@ -263,6 +267,18 @@ fn draw_ui(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState) {
                 }
             });
         });
+
+    // The trigger indicators blink while lit, but egui only redraws on input;
+    // keep repainting while any channel is active so the blink animates and
+    // the fade-out completes.
+    if state
+        .triggers
+        .iter()
+        .any(|t| f32::from_bits(t.load(Ordering::Relaxed)) > 0.01)
+    {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(40));
+    }
 
     if state.show_mappings {
         draw_mappings_dialog(ui, state);

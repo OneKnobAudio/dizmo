@@ -27,6 +27,13 @@ const CUT_FADE_MS: f32 = 5.0;
 /// to avoid a click. The residual 1 ms overlap is masked by the new attack.
 const RETRIGGER_FADE_MS: f32 = 1.0;
 
+/// Length of the fade-in applied to every new voice. A sample may not start at
+/// a zero crossing, so an instantly full-gain voice would step from whatever
+/// the previous output was to the sample's first value, popping. Ramping the
+/// gain from 0 over ~1 ms hides that discontinuity; the transient attack of a
+/// drum hit is not audibly dulled by such a short ramp.
+const ATTACK_FADE_MS: f32 = 1.0;
+
 /// The drum engine: note in -> voice playback into per-kit-channel mono output.
 pub struct Engine {
     kit: Arc<Kit>,
@@ -55,6 +62,11 @@ struct Voice {
     streams: Vec<VoiceStream>,
     position: f32,
     gain: f32,
+    /// Frames left in the initial fade-in from silence; `0` once the voice is
+    /// at full gain. The attack ramps `gain` up at [`ATTACK_FADE_MS`].
+    attack_remaining: f32,
+    /// Per-frame linear gain increment while in the attack ramp; `0` otherwise.
+    attack_step: f32,
     /// Per-frame linear gain decrement while fading out (choke or
     /// click-prevention cut); `0` when not fading.
     fade_step: f32,
@@ -194,7 +206,7 @@ impl Engine {
 
             let start = voice.position as usize;
             let gain_start = voice.gain;
-            let gain_step = -voice.fade_step;
+            let gain_step = voice.attack_step - voice.fade_step;
             let mut max_len = 0usize;
             for stream in &voice.streams {
                 max_len = max_len.max(stream.data.len());
@@ -205,13 +217,21 @@ impl Engine {
                 let read_to = (start + frames).min(data.len());
                 let out_buffer = &mut out[stream.output];
                 for (frame, &value) in data[start..read_to].iter().enumerate() {
-                    let gain = (gain_start + gain_step * frame as f32).max(0.0);
+                    let gain = (gain_start + gain_step * frame as f32).clamp(0.0, 1.0);
                     out_buffer[offset + frame] += value * gain;
                 }
             }
 
             voice.position += frames as f32;
-            voice.gain = (gain_start + gain_step * frames as f32).max(0.0);
+            voice.gain = (gain_start + gain_step * frames as f32).clamp(0.0, 1.0);
+            if voice.attack_remaining > 0.0 {
+                voice.attack_remaining -= frames as f32;
+                if voice.attack_remaining <= 0.0 {
+                    // The ramp reached full gain; stop advancing it.
+                    voice.attack_step = 0.0;
+                    voice.gain = 1.0;
+                }
+            }
             if voice.fade_step > 0.0 && voice.gain <= 0.0 {
                 voice.finished = true;
             }
@@ -299,11 +319,17 @@ impl Engine {
             }
         }
 
+        let attack_frames = attack_fade_frames(self.sample_rate);
+        let attack_step = 1.0 / attack_frames.max(1.0);
         self.voices.push(Voice {
             instrument: instrument_index,
             streams,
             position: 0.0,
-            gain: 1.0,
+            // The ramp starts just above silence (frame 0 is `attack_step`) so
+            // a sample that begins at a non-zero crossing steps in softly.
+            gain: attack_step,
+            attack_remaining: attack_frames,
+            attack_step,
             fade_step: 0.0,
             finished: false,
         });
@@ -311,9 +337,10 @@ impl Engine {
 
     /// The per-instrument MIDI and channel mappings, shown in the editor's
     /// Mappings dialog. Computed once at load time. Each instrument gets a
-    /// single primary channel mapping: the `main` entry whose input channel
-    /// shares the instrument's name, falling back to the first `main` entry,
-    /// then the first declared entry for kits that do not use `main`.
+    /// primary channels mapping from its `main` channelmap entries: the
+    /// entry whose input channel shares the instrument's name, falling back to
+    /// the first `main` entry. Instruments without a `main` entry expose no
+    /// channel mapping.
     pub fn mappings(&self) -> Vec<InstrumentMapping> {
         self.kit
             .instruments
@@ -331,8 +358,7 @@ impl Engine {
                         .channel_map
                         .iter()
                         .find(|map| map.is_main && map.in_name == instrument.name)
-                        .or_else(|| instrument.channel_map.iter().find(|map| map.is_main))
-                        .or_else(|| instrument.channel_map.first());
+                        .or_else(|| instrument.channel_map.iter().find(|map| map.is_main));
                     primary
                         .map(|map| ChannelAssignment {
                             in_name: map.in_name.clone(),
@@ -429,6 +455,7 @@ impl Engine {
             if fade_frames <= 1.0 {
                 voice.finished = true;
             } else {
+                end_attack(voice);
                 voice.fade_step = voice.gain / fade_frames;
             }
         }
@@ -440,12 +467,25 @@ fn cut_fade_frames(sample_rate: f32) -> f32 {
     CUT_FADE_MS / 1000.0 * sample_rate
 }
 
+/// Frames a [`ATTACK_FADE_MS`] fade-in spans at `sample_rate`.
+fn attack_fade_frames(sample_rate: f32) -> f32 {
+    ATTACK_FADE_MS / 1000.0 * sample_rate
+}
+
+/// Stops the attack ramp on `voice`, leaving `gain` where it is so a fade-out
+/// from that point ramps to silence instead of climbing back up.
+fn end_attack(voice: &mut Voice) {
+    voice.attack_step = 0.0;
+    voice.attack_remaining = 0.0;
+}
+
 /// Starts a click-prevention fade on `voice`, or finishes it when the fade is
 /// shorter than a single frame.
 fn begin_cut_fade(fade_frames: f32, voice: &mut Voice) {
     if fade_frames <= 1.0 {
         voice.finished = true;
     } else {
+        end_attack(voice);
         voice.fade_step = voice.gain / fade_frames;
     }
 }
