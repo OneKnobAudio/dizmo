@@ -83,6 +83,10 @@ pub struct EditorState {
     pub show_mappings: bool,
     /// The in-window kit picker.
     pub file_dialog: FileDialog,
+    /// A load error to display in a modal dialog, if any.
+    pub show_error: Option<String>,
+    /// A non-fatal load warning to display in a modal dialog, if any.
+    pub show_warning: Option<String>,
 }
 
 /// A `FileDialog` configured for picking a DrumGizmo `drumkit.xml`.
@@ -117,6 +121,8 @@ impl EditorState {
             triggers,
             show_mappings: false,
             file_dialog: kit_file_dialog(),
+            show_error: None,
+            show_warning: None,
         }
     }
 }
@@ -154,6 +160,7 @@ impl DizmoEditor {
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
         levels: Arc<[AtomicU32; NUM_CHANNELS]>,
         triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
+        wake_tx: crossbeam_channel::Sender<egui::Context>,
     ) -> Self {
         let egui_state = params.editor_state.clone();
         let editor_state =
@@ -163,7 +170,10 @@ impl DizmoEditor {
             egui_state,
             editor_state,
             EguiNiceSettings::new().with_tile("DIZMO"),
-            |ctx, _commands, _state| {
+            move |ctx, _commands, _state| {
+                // Publish the egui context so the audio thread can request an
+                // immediate repaint when a note lights an indicator.
+                let _ = wake_tx.send(ctx.clone());
                 ctx.set_visuals(egui::Visuals::dark());
             },
             |ui, setter, _commands, state| {
@@ -183,6 +193,7 @@ impl DizmoEditor {
 impl Default for DizmoEditor {
     fn default() -> Self {
         let (_tx, rx) = crossbeam_channel::unbounded();
+        let (wake_tx, _wake_rx) = crossbeam_channel::unbounded();
         Self::new(
             Arc::new(DizmoParams::default()),
             true,
@@ -190,6 +201,7 @@ impl Default for DizmoEditor {
             Some(rx),
             Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
             Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+            wake_tx,
         )
     }
 }
@@ -268,20 +280,68 @@ fn draw_ui(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState) {
             });
         });
 
-    // The trigger indicators blink while lit, but egui only redraws on input;
-    // keep repainting while any channel is active so the blink animates and
-    // the fade-out completes.
-    if state
+    // The trigger indicators blink while lit and the signal LEDs animate
+    // while a channel rings, but egui only redraws on input; keep repainting
+    // while any channel is active so the animations play out. New hits wake
+    // the editor immediately via the audio thread, so a fresh hit is never
+    // missed while this cadence is idle.
+    let triggers_active = state
         .triggers
         .iter()
-        .any(|t| f32::from_bits(t.load(Ordering::Relaxed)) > 0.01)
-    {
+        .any(|t| f32::from_bits(t.load(Ordering::Relaxed)) > 0.01);
+    let levels_active = state
+        .levels
+        .iter()
+        .any(|l| f32::from_bits(l.load(Ordering::Relaxed)) > 0.0005);
+    if triggers_active || levels_active {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(40));
     }
 
     if state.show_mappings {
         draw_mappings_dialog(ui, state);
+    }
+
+    if state.show_error.is_some() {
+        draw_modal_dialog(
+            ui,
+            "Error loading kit",
+            RichText::new(state.show_error.as_deref().unwrap_or("")).color(TEXT),
+            &mut state.show_error,
+        );
+    }
+    if state.show_warning.is_some() {
+        draw_modal_dialog(
+            ui,
+            "Kit loaded with warnings",
+            RichText::new(state.show_warning.as_deref().unwrap_or("")).color(TEXT),
+            &mut state.show_warning,
+        );
+    }
+}
+
+/// Draws a centered, modal dialog with `title` and `message`, dismissed by the
+/// OK button, the title-bar close, the backdrop, or Esc. Clears `message` when
+/// dismissed.
+fn draw_modal_dialog(
+    ui: &mut Ui,
+    title: &str,
+    message: RichText,
+    message_slot: &mut Option<String>,
+) {
+    let mut close = false;
+    let response = egui::Modal::new(egui::Id::new(title)).show(ui.ctx(), |ui| {
+        ui.set_width(380.0);
+        ui.heading(RichText::new(title).color(TEXT));
+        ui.add_space(10.0);
+        ui.add(egui::Label::new(message).wrap());
+        ui.add_space(16.0);
+        if ui.button("OK").clicked() {
+            close = true;
+        }
+    });
+    if close || response.should_close() {
+        message_slot.take();
     }
 }
 
@@ -455,12 +515,21 @@ fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
                     name,
                     channels,
                     mappings,
-                } => LoadStatus::Loaded {
-                    name,
-                    channels,
-                    mappings,
-                },
-                KitStatus::Failed(message) => LoadStatus::Failed(message),
+                    warnings,
+                } => {
+                    if !warnings.is_empty() {
+                        state.show_warning = Some(warnings.join("\n"));
+                    }
+                    LoadStatus::Loaded {
+                        name,
+                        channels,
+                        mappings,
+                    }
+                }
+                KitStatus::Failed(message) => {
+                    state.show_error = Some(message.clone());
+                    LoadStatus::Failed(message)
+                }
                 KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },
             };
         }

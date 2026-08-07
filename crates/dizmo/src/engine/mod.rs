@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::kit::{Kit, KitError, MidiMap, SampleBank, SampleError, load_samples_with_progress};
+use crate::params::NUM_CHANNELS;
 
 /// Maximum number of simultaneously playing voices; the oldest is faded out
 /// first when exceeded.
@@ -243,9 +244,10 @@ impl Engine {
         self.voices.retain(|voice| !voice.finished);
     }
 
-    /// The number of output channels this engine writes (one per kit channel).
+    /// The number of output channels this engine writes (one per kit channel,
+    /// capped at the number of plugin outputs).
     pub fn kit_channels(&self) -> usize {
-        self.kit.channels.len()
+        self.kit.channels.len().min(NUM_CHANNELS)
     }
 
     /// The kit's display name from drumkit.xml.
@@ -527,14 +529,16 @@ pub fn load_engine(
     target_sample_rate: Option<u32>,
 ) -> Result<Engine, EngineLoadError> {
     load_engine_with_progress(kit_path, target_sample_rate, &mut |_, _| {})
+        .map(|(engine, _warnings)| engine)
 }
 
-/// Like [`load_engine`], but reports decoding progress via `progress(loaded, total)`.
+/// Like [`load_engine`], but reports decoding progress via `progress(loaded, total)`
+/// and returns any non-fatal loading warnings alongside the engine.
 pub fn load_engine_with_progress(
     kit_path: impl AsRef<Path>,
     target_sample_rate: Option<u32>,
     progress: &mut dyn FnMut(usize, usize),
-) -> Result<Engine, EngineLoadError> {
+) -> Result<(Engine, Vec<String>), EngineLoadError> {
     let kit = Arc::new(Kit::load(kit_path)?);
     // The default midimap (declared or convention-detected) is best-effort:
     // the convention spelling is tried first, then the same name with the
@@ -549,5 +553,16 @@ pub fn load_engine_with_progress(
         target_sample_rate,
         progress,
     )?);
-    Ok(Engine::new(kit, bank, midimap))
+    let engine = Engine::new(kit, bank, midimap);
+
+    let mut warnings = Vec::new();
+    let declared = engine.channel_names().len();
+    if declared > NUM_CHANNELS {
+        warnings.push(format!(
+            "'{}' declares {declared} channels, but DIZMO supports {NUM_CHANNELS}. \
+             Channels beyond {NUM_CHANNELS} were ignored.",
+            engine.kit_name()
+        ));
+    }
+    Ok((engine, warnings))
 }

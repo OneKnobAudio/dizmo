@@ -5,3 +5,25 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+# Kit loading decodes and resamples every sample file; in dev builds the
+# default opt-level 0 makes the decode + FFT resampling ~30x slower (the plugin
+# bundle defaults to a dev build), so loading a kit takes minutes. Optimize the
+# dev build so kit loading is fast even in debug bundles.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.ardftsrc]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.hound]
+opt-level = 3
+
+[profile.dev.package.num-complex]
+opt-level = 3

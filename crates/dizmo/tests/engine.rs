@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dizmo::engine::{Engine, MAX_VOICES, load_engine};
+use dizmo::engine::{Engine, MAX_VOICES, load_engine, load_engine_with_progress};
 use dizmo::kit::{Kit, MidiMap, SampleBank, load_samples};
 
 const DRUMKIT: &str = r#"<drumkit version="2.0">
@@ -898,6 +898,107 @@ fn load_engine_picks_up_plain_midimap_without_variation() {
         out[0][0],
         1000.0 / 32768.0 * attack_gain(0, 44100.0)
     ));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const EDGE_INST: &str = r#"<instrument version="2.0" name="Edge">
+  <samples>
+    <sample name="Edge-1" power="0.1">
+      <audiofile channel="Edge" file="edge.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>
+"#;
+
+/// Builds a kit with `channel_count` channels and returns its directory.
+fn setup_multi_channel(tag: &str, channel_count: usize) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("dizmo-engine-{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let channels: String = (1..=channel_count)
+        .map(|i| format!(r#"<channel name="Ch{i}"/>"#))
+        .collect();
+    let drumkit = format!(
+        r#"<drumkit version="2.0">
+  <metadata><defaultmidimap src="midimap.xml"/></metadata>
+  <channels>{channels}</channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Ch1" main="true"/>
+    </instrument>
+    <instrument name="Edge" file="inst_edge.xml">
+      <channelmap in="Edge" out="Ch{channel_count}" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>"#
+    );
+    write_file(&dir, "drumkit.xml", &drumkit);
+    write_file(&dir, "inst_kick.xml", INST_KICK);
+    write_file(&dir, "inst_edge.xml", EDGE_INST);
+    write_file(
+        &dir,
+        "midimap.xml",
+        r#"<midimap>
+  <map note="36" instr="Kick"/>
+  <map note="37" instr="Edge"/>
+</midimap>"#,
+    );
+    write_wavs(
+        &dir,
+        &[
+            ("kick.wav", 1, &[1000, 2000, 3000]),
+            ("edge.wav", 1, &[500, 600, 700]),
+        ],
+    );
+    dir
+}
+
+#[test]
+fn kit_with_more_than_16_channels_warns_and_clamps() {
+    let dir = setup_multi_channel("17ch-warn", 17);
+
+    let (engine, warnings) =
+        load_engine_with_progress(dir.join("drumkit.xml"), None, &mut |_, _| {}).unwrap();
+    assert_eq!(engine.kit_channels(), 16);
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].contains("17"),
+        "warning should mention the declared channel count: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("16"),
+        "warning should mention the supported channel count: {}",
+        warnings[0]
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn kit_channels_beyond_16_are_ignored_without_crashing() {
+    let dir = setup_multi_channel("17ch-run", 17);
+    let (mut engine, _warnings) =
+        load_engine_with_progress(dir.join("drumkit.xml"), None, &mut |_, _| {}).unwrap();
+
+    // Kick routes to Ch1 (output 0); Edge routes to Ch17 (output 16), which
+    // has no plugin output buffer and must be dropped instead of panicking.
+    engine.note_on(36, 127);
+    engine.note_on(37, 127);
+    assert_eq!(engine.active_voices(), 2);
+
+    let out = run(&mut engine, 16, 3);
+    // The Kick reaches output 0...
+    assert!(approx(
+        out[0][0],
+        1000.0 / 32768.0 * attack_gain(0, 44100.0)
+    ));
+    // ...and no other output receives the out-of-range Edge stream.
+    for buffer in &out[1..] {
+        assert!(buffer.iter().all(|&sample| sample == 0.0));
+    }
 
     std::fs::remove_dir_all(&dir).ok();
 }
