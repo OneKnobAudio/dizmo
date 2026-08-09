@@ -38,3 +38,7 @@ cargo build --release
 ```
 
 The plugin is built as a VST3 and CLAP from the `dizmo` crate.
+
+## AI Disclaimer.
+
+The author of this project used an LLM for code review and documentation.
