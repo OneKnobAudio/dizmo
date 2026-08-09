@@ -34,7 +34,8 @@ pub struct ChannelParams {
     #[id = "fader"]
     pub fader: FloatParam,
 
-    /// Pan position in the MAIN mix, -1 (left) .. 1 (right).
+    /// Pan position in the MAIN mix, -100 (full left) .. +100 (full right),
+    /// as a percentage of panning toward each side.
     #[id = "pan"]
     pub pan: FloatParam,
 
@@ -67,12 +68,56 @@ fn pan_param(name: &str) -> FloatParam {
         name,
         0.0,
         FloatRange::Linear {
-            min: -1.0,
-            max: 1.0,
+            min: -100.0,
+            max: 100.0,
         },
     )
-    .with_value_to_string(formatters::v2s_f32_panning())
-    .with_string_to_value(formatters::s2v_f32_panning())
+    .with_smoother(SmoothingStyle::Linear(20.0))
+    .with_value_to_string(v2s_f32_pan())
+    .with_string_to_value(s2v_f32_pan())
+}
+
+/// A pan value formatter (see `v2s_f32_pan`).
+type PanValueFormatter = Arc<dyn Fn(f32) -> String + Send + Sync>;
+
+/// A pan string parser (see `s2v_f32_pan`).
+type PanStringParser = Arc<dyn Fn(&str) -> Option<f32> + Send + Sync>;
+
+/// Formats a pan percentage (-100..100) as `L 50%` / `C` / `R 50%`.
+pub(crate) fn v2s_f32_pan() -> PanValueFormatter {
+    Arc::new(|value| {
+        if value.abs() < 0.5 {
+            "C".to_string()
+        } else if value < 0.0 {
+            format!("L {:.0}%", -value)
+        } else {
+            format!("R {:.0}%", value)
+        }
+    })
+}
+
+/// Parses a pan string: `L 50%`, `50L`, `R50`, `C`, or a plain number.
+fn s2v_f32_pan() -> PanStringParser {
+    Arc::new(|string| {
+        let string = string.trim();
+        if string.eq_ignore_ascii_case("c") {
+            return Some(0.0);
+        }
+        let cleaned = string.replace('%', "");
+        let upper = cleaned.to_ascii_uppercase();
+        let sign = if upper.starts_with('L') || upper.ends_with('L') {
+            -1.0
+        } else {
+            1.0
+        };
+        cleaned
+            .trim_start_matches(['l', 'L', 'r', 'R'])
+            .trim_end_matches(['l', 'L', 'r', 'R'])
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| sign * v)
+    })
 }
 
 impl ChannelParams {

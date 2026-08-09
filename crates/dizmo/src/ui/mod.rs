@@ -43,7 +43,6 @@ pub(crate) const TRACK_BG: Color = Color::from_rgb8(0x23, 0x26, 0x2c);
 pub(crate) const TEXT: Color = Color::from_rgb8(0xf2, 0xf4, 0xf7);
 pub(crate) const TEXT_DIM: Color = Color::from_rgb8(0x8b, 0x90, 0x99);
 pub(crate) const ACCENT: Color = Color::from_rgb8(0x55, 0x84, 0xc8);
-pub(crate) const KNOB_BORDER: Color = Color::from_rgb8(0x3a, 0x3f, 0x48);
 pub(crate) const INDICATOR: Color = Color::from_rgb8(0xe8, 0xec, 0xf1);
 pub(crate) const SOLO_ACTIVE: Color = Color::from_rgb8(0x9a, 0x8a, 0x3c);
 pub(crate) const MUTE_ACTIVE: Color = Color::from_rgb8(0xb0, 0x4a, 0x46);

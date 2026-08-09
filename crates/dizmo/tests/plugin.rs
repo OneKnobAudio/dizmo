@@ -176,3 +176,29 @@ fn mixdown_applies_constant_power_pan_law() {
     assert!((left[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
     assert!((right[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
 }
+
+#[test]
+fn mixdown_pan_uses_percentage_range() {
+    use dizmo::params::DizmoParams;
+
+    let scratch = vec![vec![1.0]];
+    let params = DizmoParams::default();
+
+    // Full left (-100): all signal to the left channel.
+    let mut left = vec![0.0];
+    let mut right = vec![0.0];
+    params.channels[0].pan.smoothed.reset(-100.0);
+    params.channels[0].pan.smoothed.set_target(48000.0, -100.0);
+    mixdown_to_stereo(&scratch, 1, 1, &mut left, &mut right, &params.channels);
+    assert!((left[0] - 1.0).abs() < 1e-6);
+    assert!(right[0].abs() < 1e-6);
+
+    // Full right (+100): all signal to the right channel.
+    params.channels[0].pan.smoothed.reset(100.0);
+    params.channels[0].pan.smoothed.set_target(48000.0, 100.0);
+    let mut left = vec![0.0];
+    let mut right = vec![0.0];
+    mixdown_to_stereo(&scratch, 1, 1, &mut left, &mut right, &params.channels);
+    assert!(left[0].abs() < 1e-6);
+    assert!((right[0] - 1.0).abs() < 1e-6);
+}

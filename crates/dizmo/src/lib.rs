@@ -237,7 +237,14 @@ pub fn mixdown_to_stereo(
             } else {
                 param.fader.value()
             };
-            let pan_pos = param.pan.value();
+            // Pan is stored as a percentage (-100 .. 100); step the smoother
+            // once per sample so automation ramps instead of zipper-stepping,
+            // then scale to -1 .. 1.
+            let pan_pos = if param.pan.smoothed.is_smoothing() {
+                param.pan.smoothed.next()
+            } else {
+                param.pan.value()
+            } / 100.0;
 
             // Pan law: Constant power -3dB law
             // pan_pos: -1 (full left) to +1 (full right)
