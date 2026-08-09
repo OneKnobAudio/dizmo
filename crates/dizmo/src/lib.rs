@@ -339,8 +339,8 @@ macro_rules! impl_dizmo_plugin {
 
         impl Plugin for $plugin {
             const NAME: &'static str = $name;
-            const VENDOR: &'static str = "DIZMO";
-            const URL: &'static str = "https://dizmo.invalid";
+            const VENDOR: &'static str = "OneKnobAudio";
+            const URL: &'static str = "https://github.com/yorodm/dizmo";
             const EMAIL: &'static str = "info@dizmo.invalid";
             const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -503,7 +503,7 @@ impl_dizmo_plugin!(
     DizmoPlugin,
     "DIZMO",
     STEREO_LAYOUT,
-    "com.dizmo.dizmo",
+    "com.githum.yorodm.dizmo",
     &[ClapFeature::Instrument, ClapFeature::Stereo],
     *b"DIZMOPluginUI_01",
     true
@@ -513,7 +513,7 @@ impl_dizmo_plugin!(
     DizmoMultiPlugin,
     "DIZMO Multi",
     MULTI_LAYOUT,
-    "com.dizmo.dizmo-multi",
+    "com.github.yorodm.dizmo-multi",
     &[ClapFeature::Instrument],
     *b"DIZMOPluginUI_02",
     false

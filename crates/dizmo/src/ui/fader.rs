@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 const LED_THRESHOLD: f32 = 0.0001;
 
 /// Builds the fader block: a plain `VSlider` with a signal LED above the track.
-pub fn show_fader<'a>(state: &'a crate::ui::MyGui, channel: usize) -> Column<'a, Message> {
+pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'a, Message> {
     let fader = &state.editor_state.params.channels[channel].fader;
     let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
 

@@ -82,7 +82,7 @@ impl KitError {
 
 /// A fully resolved DrumGizmo kit, ready for the engine to use.
 #[derive(Debug)]
-pub struct Kit {
+pub struct DizmoKit {
     /// The `version` attribute of the `drumkit.xml` (x.y.z versioning).
     pub version: String,
     pub name: String,
@@ -100,10 +100,10 @@ pub struct Kit {
     pub default_midimap: Option<String>,
 }
 
-impl Kit {
+impl DizmoKit {
     /// Loads a kit from its `drumkit.xml` file, resolving every referenced
     /// instrument XML file relative to the drumkit file.
-    pub fn load(path: impl AsRef<Path>) -> Result<Kit, KitError> {
+    pub fn load(path: impl AsRef<Path>) -> Result<DizmoKit, KitError> {
         let path = path.as_ref();
         let drumkit = drumkit::parse_file(path)?;
         let root_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
@@ -122,7 +122,7 @@ impl Kit {
             instruments.push(instrument);
         }
 
-        Ok(Kit {
+        Ok(DizmoKit {
             version: drumkit.version,
             name: drumkit.name,
             description: drumkit.description,

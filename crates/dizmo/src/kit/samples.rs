@@ -13,7 +13,7 @@ use std::sync::{Arc, mpsc};
 
 use ardftsrc::{PRESET_GOOD, PlanarResampler};
 
-use super::{AudioFile, Kit};
+use super::{AudioFile, DizmoKit};
 
 /// A fully decoded WAV file, split into one mono buffer per channel.
 #[derive(Debug)]
@@ -84,7 +84,7 @@ struct SampleTask {
 ///
 /// Returns the first error encountered (missing file, malformed WAV, or a
 /// `filechannel` outside the file's channel count).
-pub fn load_samples(kit: &Kit, target_sample_rate: Option<u32>) -> Result<SampleBank, SampleError> {
+pub fn load_samples(kit: &DizmoKit, target_sample_rate: Option<u32>) -> Result<SampleBank, SampleError> {
     load_samples_with_progress(kit, target_sample_rate, &mut |_, _| {})
 }
 
@@ -94,7 +94,7 @@ pub fn load_samples(kit: &Kit, target_sample_rate: Option<u32>) -> Result<Sample
 /// reported in kit declaration order: the first file (by load order) that
 /// fails determines the returned error, matching serial loading.
 pub fn load_samples_with_progress(
-    kit: &Kit,
+    kit: &DizmoKit,
     target_sample_rate: Option<u32>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<SampleBank, SampleError> {
@@ -156,7 +156,7 @@ pub fn load_samples_with_progress(
 
 /// The unique sample files referenced by `kit`, in load order, each with the
 /// name of its first referencing sample and the 0-based channels it uses.
-fn unique_files(kit: &Kit) -> Vec<SampleTask> {
+fn unique_files(kit: &DizmoKit) -> Vec<SampleTask> {
     let mut indexes: HashMap<PathBuf, usize> = HashMap::new();
     let mut tasks: Vec<SampleTask> = Vec::new();
     for instrument in &kit.instruments {

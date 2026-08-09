@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::kit::{Kit, KitError, MidiMap, SampleBank, SampleError, load_samples_with_progress};
+use crate::kit::{
+    DizmoKit, KitError, MidiMap, SampleBank, SampleError, load_samples_with_progress,
+};
 use crate::params::NUM_CHANNELS;
 
 /// Maximum number of simultaneously playing voices; the oldest is faded out
@@ -37,7 +39,7 @@ const ATTACK_FADE_MS: f32 = 1.0;
 
 /// The drum engine: note in -> voice playback into per-kit-channel mono output.
 pub struct Engine {
-    kit: Arc<Kit>,
+    kit: Arc<DizmoKit>,
     bank: Arc<SampleBank>,
     midimap: MidiMap,
     /// Kit channel name -> index in the output buffer.
@@ -100,7 +102,7 @@ pub struct ChannelAssignment {
 }
 
 impl Engine {
-    pub fn new(kit: Arc<Kit>, bank: Arc<SampleBank>, midimap: MidiMap) -> Self {
+    pub fn new(kit: Arc<DizmoKit>, bank: Arc<SampleBank>, midimap: MidiMap) -> Self {
         let output_index = kit
             .channels
             .iter()
@@ -539,7 +541,7 @@ pub fn load_engine_with_progress(
     target_sample_rate: Option<u32>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(Engine, Vec<String>), EngineLoadError> {
-    let kit = Arc::new(Kit::load(kit_path)?);
+    let kit = Arc::new(DizmoKit::load(kit_path)?);
     // The default midimap (declared or convention-detected) is best-effort:
     // the convention spelling is tried first, then the same name with the
     // leading "midimap" in the other case. A missing file leaves the kit

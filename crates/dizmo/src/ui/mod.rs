@@ -149,7 +149,7 @@ pub enum Message {
 }
 
 /// The program state for the iced editor.
-pub struct MyGui {
+pub struct DizmoGui {
     /// The persistent editor state.
     pub editor_state: IcedEditorState<EditorState>,
     /// For sending parameter changes to the host.
@@ -168,7 +168,7 @@ pub struct MyGui {
     pub tick: u64,
 }
 
-impl MyGui {
+impl DizmoGui {
     fn new(editor_state: IcedEditorState<EditorState>, nice_ctx: NiceGuiContext) -> Self {
         Self {
             editor_state,
@@ -362,12 +362,12 @@ impl MyGui {
 
 /// Free function view so `nice_plug_iced::application` gets a higher-ranked
 /// (for-any-lifetime) `ViewFn` rather than a closure with a fixed lifetime.
-fn view(state: &MyGui) -> Element<'_, Message> {
+fn view(state: &DizmoGui) -> Element<'_, Message> {
     state.view()
 }
 
 /// Free function theme, for the same higher-ranked lifetime reason.
-fn theme(_state: &MyGui) -> iced::Theme {
+fn theme(_state: &DizmoGui) -> iced::Theme {
     iced::Theme::custom(
         "DIZMO",
         iced::theme::Palette {
@@ -414,8 +414,8 @@ impl DizmoEditor {
                 nice_plug_iced::application(
                     editor_state,
                     nice_ctx,
-                    MyGui::new,
-                    |state: &mut MyGui, message: Message| state.update(message),
+                    DizmoGui::new,
+                    |state: &mut DizmoGui, message: Message| state.update(message),
                     view,
                 )
                 .theme(theme)
@@ -639,7 +639,7 @@ fn modal_dialog<'a>(
 }
 
 /// The Mappings dialog: MIDI note map and channel assignment per instrument.
-fn mappings_dialog<'a>(state: &'a MyGui) -> iced::widget::Stack<'a, Message> {
+fn mappings_dialog<'a>(state: &'a DizmoGui) -> iced::widget::Stack<'a, Message> {
     let (title, body) = match &state.load_status {
         LoadStatus::Loaded { name, mappings, .. } => (name.as_str(), Some(mappings.as_slice())),
         _ => ("Mappings", None),

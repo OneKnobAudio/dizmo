@@ -4,8 +4,8 @@
 use crate::ui::fader::{fader_readout, show_fader};
 use crate::ui::knob::show_knob;
 use crate::ui::{
-    ACCENT, CARD_BG, CARD_BORDER, FIELD_BG, FIELD_BORDER, FIELD_HOVER, LoadStatus, MUTE_ACTIVE,
-    Message, MyGui, SOLO_ACTIVE, TEXT, TRIGGER_ACTIVE, TRIGGER_DIM,
+    ACCENT, CARD_BG, CARD_BORDER, DizmoGui, FIELD_BG, FIELD_BORDER, FIELD_HOVER, LoadStatus,
+    MUTE_ACTIVE, Message, SOLO_ACTIVE, TEXT, TRIGGER_ACTIVE, TRIGGER_DIM,
 };
 use iced::core::border::Radius;
 use iced::widget::{
@@ -24,7 +24,7 @@ pub const STRIP_WIDTH: f32 = 128.0;
 pub const STRIP_HEIGHT: f32 = 460.0;
 
 /// Builds a single channel strip matching the mockup layout.
-pub fn draw_strip<'a>(state: &'a MyGui, channel: usize) -> Container<'a, Message> {
+pub fn draw_strip<'a>(state: &'a DizmoGui, channel: usize) -> Container<'a, Message> {
     let params = &state.editor_state.params;
     let trigger = f32::from_bits(state.editor_state.triggers[channel].load(Ordering::Relaxed));
     let lit = trigger > 0.01;
@@ -130,7 +130,7 @@ fn toggle_button<'a>(
 /// The label shown in the channel indicator: the kit's channel name from its
 /// `<channels>` section when a kit is loaded, otherwise the plain channel
 /// number.
-fn channel_indicator_label(state: &MyGui, index: usize) -> String {
+fn channel_indicator_label(state: &DizmoGui, index: usize) -> String {
     match &state.load_status {
         LoadStatus::Loaded { channels, .. } => channels
             .get(index)

@@ -1,4 +1,4 @@
-use dizmo::kit::{Choke, Kit, KitError, MidiMap};
+use dizmo::kit::{Choke, DizmoKit, KitError, MidiMap};
 use std::path::Path;
 
 fn fixture_dir() -> &'static Path {
@@ -7,7 +7,7 @@ fn fixture_dir() -> &'static Path {
 
 #[test]
 fn loads_a_complete_kit() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
 
     assert_eq!(kit.version, "2.1.0");
     assert_eq!(kit.name, "Test Kit");
@@ -41,7 +41,7 @@ fn loads_a_complete_kit() {
 
 #[test]
 fn resolves_channel_maps() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
 
     let kick = &kit.instruments[0];
     assert_eq!(kick.channel_map.len(), 3);
@@ -56,7 +56,7 @@ fn resolves_channel_maps() {
 
 #[test]
 fn resolves_groups_and_chokes() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
 
     let closed = &kit.instruments[2];
     let open = &kit.instruments[3];
@@ -76,7 +76,7 @@ fn resolves_groups_and_chokes() {
 
 #[test]
 fn parses_v2_samples_with_power() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
     let kick = &kit.instruments[0];
 
     assert!(kick.is_v2());
@@ -105,7 +105,7 @@ fn parses_v2_samples_with_power() {
 
 #[test]
 fn parses_normalized_flag() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
     let snare = &kit.instruments[1];
 
     assert!(snare.samples[0].normalized);
@@ -115,7 +115,7 @@ fn parses_normalized_flag() {
 
 #[test]
 fn parses_v1_velocity_groups() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
     let hihat = &kit.instruments[2];
 
     assert!(!hihat.is_v2());
@@ -133,7 +133,7 @@ fn parses_v1_velocity_groups() {
 
 #[test]
 fn loads_midimap() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
     let midimap: MidiMap = kit.load_midimap("midimap.xml").unwrap();
 
     assert_eq!(midimap.entries.len(), 4);
@@ -144,7 +144,7 @@ fn loads_midimap() {
 
 #[test]
 fn errors_on_missing_file() {
-    let error = Kit::load(fixture_dir().join("does-not-exist.xml")).unwrap_err();
+    let error = DizmoKit::load(fixture_dir().join("does-not-exist.xml")).unwrap_err();
     assert!(matches!(error, KitError::Io { .. }), "got {error:?}");
 }
 
@@ -156,7 +156,7 @@ fn errors_on_malformed_drumkit_xml() {
     let drumkit = kit_dir.join("drumkit.xml");
     std::fs::write(&drumkit, "<drumkit><instruments>").unwrap();
 
-    let error = Kit::load(&drumkit).unwrap_err();
+    let error = DizmoKit::load(&drumkit).unwrap_err();
     assert!(matches!(error, KitError::Parse { .. }), "got {error:?}");
 
     std::fs::remove_dir_all(&kit_dir).ok();
@@ -172,7 +172,7 @@ fn errors_on_malformed_instrument_xml() {
     std::fs::write(&drumkit, r#"<drumkit><instruments><instrument name="Broken" file="inst_broken.xml"/></instruments></drumkit>"#).unwrap();
     std::fs::write(&instrument, "<instrument><name>").unwrap();
 
-    let error = Kit::load(&drumkit).unwrap_err();
+    let error = DizmoKit::load(&drumkit).unwrap_err();
     assert!(matches!(error, KitError::Parse { .. }), "got {error:?}");
 
     std::fs::remove_dir_all(&kit_dir).ok();
@@ -188,7 +188,7 @@ fn errors_on_missing_required_attribute() {
     std::fs::write(&drumkit, r#"<drumkit><instruments><instrument name="Bad" file="inst_bad.xml"/></instruments></drumkit>"#).unwrap();
     std::fs::write(&instrument, r#"<instrument version="2.0"><samples><sample name="S" power="0.1"/></samples></instrument>"#).unwrap();
 
-    let error = Kit::load(&drumkit).unwrap_err();
+    let error = DizmoKit::load(&drumkit).unwrap_err();
     assert!(matches!(error, KitError::Missing { .. }), "got {error:?}");
 
     std::fs::remove_dir_all(&kit_dir).ok();
@@ -196,14 +196,14 @@ fn errors_on_missing_required_attribute() {
 
 #[test]
 fn looks_up_instruments_by_name() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
     assert_eq!(kit.instrument("Snare").unwrap().id, 1);
     assert!(kit.instrument("Cowbell").is_none());
 }
 
 #[test]
 fn rejects_out_of_range_midi_notes() {
-    let kit = Kit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
     let kit_dir = std::env::temp_dir().join("dizmo-bad-note");
     std::fs::create_dir_all(&kit_dir).unwrap();
     let path = kit_dir.join("midimap.xml");
@@ -246,7 +246,7 @@ fn supports_old_drumkit_attributes() {
     )
     .unwrap();
 
-    let kit = Kit::load(&drumkit).unwrap();
+    let kit = DizmoKit::load(&drumkit).unwrap();
     assert_eq!(kit.name, "Old Kit");
     assert_eq!(kit.description, "Legacy");
     assert_eq!(kit.samplerate, 44100.0);
@@ -262,7 +262,7 @@ const MINIMAL_INST: &str = r#"<instrument version="2.0" name="Kick">
 </instrument>"#;
 
 /// Writes a minimal kit under `name` (no declared `defaultmidimap`) and loads it.
-fn load_minimal_kit(tag: &str, name: &str) -> Kit {
+fn load_minimal_kit(tag: &str, name: &str) -> DizmoKit {
     let dir = std::env::temp_dir().join(format!("dizmo-midimap-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -272,7 +272,7 @@ fn load_minimal_kit(tag: &str, name: &str) -> Kit {
     )
     .unwrap();
     std::fs::write(dir.join("inst_kick.xml"), MINIMAL_INST).unwrap();
-    let kit = Kit::load(dir.join(name)).unwrap();
+    let kit = DizmoKit::load(dir.join(name)).unwrap();
     std::fs::remove_dir_all(&dir).ok();
     kit
 }
@@ -334,7 +334,7 @@ fn explicit_defaultmidimap_wins_over_convention() {
     .unwrap();
     std::fs::write(dir.join("inst_kick.xml"), MINIMAL_INST).unwrap();
 
-    let kit = Kit::load(dir.join("SomeKit_7.xml")).unwrap();
+    let kit = DizmoKit::load(dir.join("SomeKit_7.xml")).unwrap();
     assert_eq!(kit.default_midimap.as_deref(), Some("custom.xml"));
 
     std::fs::remove_dir_all(&dir).ok();

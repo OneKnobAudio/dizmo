@@ -11,7 +11,7 @@ pub const KNOB_RADIUS: f32 = 16.0;
 
 /// Builds the pan knob with the L/R labels and a percentage readout
 /// (stereo plugin only).
-pub fn show_knob<'a>(state: &'a crate::ui::MyGui, channel: usize) -> Column<'a, Message> {
+pub fn show_knob<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'a, Message> {
     let pan = &state.editor_state.params.channels[channel].pan;
     let knob = Knob::new(NormalParam::from_nice(pan))
         .size(Length::Fixed(KNOB_RADIUS * 2.0))
