@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: ["**"]
+    # The `package` and `release` jobs only run when a version tag is pushed.
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -56,9 +58,13 @@ jobs:
   # Build and bundle the plugins into CLAP and VST3 bundles. Both plugin
   # variants (DIZMO and DIZMO Multi) share one cdylib, so each package from
   # `bundler.toml` yields a single CLAP and a single VST3 bundle.
+  #
+  # Bundles are only generated when a version tag (`v*`) is pushed; branch
+  # pushes and pull requests only run the `test` job.
   package:
     name: Package ${{ matrix.name }}
     needs: test
+    if: startsWith(github.ref, 'refs/tags/')
     strategy:
       fail-fast: false
       matrix:
@@ -120,3 +126,23 @@ jobs:
           name: dizmo-${{ matrix.name }}
           path: dist/
           if-no-files-found: error
+
+  # Attach the bundles to a GitHub Release for the pushed version tag. This
+  # runs only after all three platform bundles are built and uploaded.
+  release:
+    name: Publish release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
