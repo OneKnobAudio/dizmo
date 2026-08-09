@@ -29,7 +29,7 @@ It acts as a drum sampler: a DrumGizmo kit provides a set of drum instruments (k
 
 ## Status
 
-The core features are implemented: DrumGizmo kit parsing (drumkit.xml, instrument.xml, midimap.xml), sample loading with resampling, velocity layer selection, choke handling, MIDI playback (note-on, note-off, all-notes-off, sample-accurate), per-channel parameters (fader gain, pan with 3dB law, mute, solo), kit loading from the editor UI, and the mixer UI (channel strips, choke assign). See [TASKS.md](TASKS.md) for remaining work, [DESIGN.md](DESIGN.md) for the UI design, and [ARCHITECTURE.md](ARCHITECTURE.md) for the architecture.
+The core features are implemented: DrumGizmo kit parsing (drumkit.xml, instrument.xml, midimap.xml), sample loading with resampling, velocity layer selection, choke handling, MIDI playback (note-on, note-off, all-notes-off, sample-accurate), per-channel parameters (fader gain, pan with 3dB law, mute, solo), kit loading from the editor UI, and the mixer UI (channel strips, choke assign).
 
 ## Building
 

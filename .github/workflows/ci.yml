@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # The steps below use bash-isms (arrays, brace expansion) that the default
+    # dash shell on Ubuntu does not support.
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Lint and test once on a single platform; packaging depends on this passing.
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxkbcommon-dev
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  # Build and bundle the plugins into CLAP and VST3 bundles. Both plugin
+  # variants (DIZMO and DIZMO Multi) share one cdylib, so each package from
+  # `bundler.toml` yields a single CLAP and a single VST3 bundle.
+  package:
+    name: Package ${{ matrix.name }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: both architectures are built and merged into a universal
+          # binary with `cargo xtask bundle-universal`. CI runners are ARM64,
+          # so the x86_64 target is installed alongside the native host target.
+          - { name: macos, os: macos-latest, targets: "aarch64-apple-darwin x86_64-apple-darwin" }
+          - { name: linux, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { name: windows, os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxkbcommon-dev
+
+      - name: Package all plugins
+        run: |
+          # Build and bundle every package listed in bundler.toml in one go
+          package_args=()
+          for package in $(cargo xtask known-packages); do
+            package_args+=("-p" "$package")
+          done
+
+          if [[ "${{ matrix.name }}" == "macos" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=10.13
+            cargo xtask bundle-universal "${package_args[@]}" --release
+          else
+            cargo xtask bundle "${package_args[@]}" --release --target "${{ matrix.target }}"
+          fi
+
+      - name: Create archive
+        run: |
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            tar -cf "dist/dizmo-${{ matrix.name }}.tar" -C target/bundled .
+          else
+            tar -czf "dist/dizmo-${{ matrix.name }}.tar.gz" -C target/bundled .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dizmo-${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error

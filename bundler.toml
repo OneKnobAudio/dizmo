@@ -1,0 +1,5 @@
+# Bundle metadata for `cargo xtask bundle`: maps each package to the name used
+# for its CLAP and VST3 bundles. Both plugin variants (DIZMO and DIZMO Multi)
+# live in the same cdylib, so one bundle is produced per package.
+[dizmo]
+name = "DIZMO"
