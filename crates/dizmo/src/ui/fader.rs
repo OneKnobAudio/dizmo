@@ -30,8 +30,12 @@ pub fn show_fader<'a>(state: &'a crate::ui::MyGui, channel: usize) -> Stack<'a, 
     let db = util::gain_to_db(fader.value());
     let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
 
+    // iced_audio 0.15.0's `VSlider` lays out its height from `self.width`
+    // (`limits.resolve(self.width, self.width, ..)`), so a fixed width also
+    // collapses the height. Use `Length::Fill` for both and let the container
+    // clamp the width instead.
     let slider = VSlider::new(NormalParam::from_nice(fader))
-        .width(Length::Fixed(24.0))
+        .width(Length::Fill)
         .height(Length::Fill)
         .on_gesture(move |gesture| Message::FaderGesture(channel, gesture));
 
@@ -42,7 +46,7 @@ pub fn show_fader<'a>(state: &'a crate::ui::MyGui, channel: usize) -> Stack<'a, 
     Stack::with_children([
         decorations.into(),
         container(slider)
-            .width(Length::Fill)
+            .width(Length::Fixed(24.0))
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center)
             .into(),
