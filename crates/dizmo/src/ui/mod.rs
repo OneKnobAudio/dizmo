@@ -1,50 +1,58 @@
-//! The egui-based editor for DIZMO, matching `assets/MOCKUP.svg`.
+//! The iced-based editor for DIZMO, matching `assets/MOCKUP.svg`.
 
 use crate::KitStatus;
 use crate::params::{DizmoParams, NUM_CHANNELS};
-use egui::{
-    Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
-};
-use egui_file_dialog::FileDialog;
+use iced_audio::Gesture;
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::prelude::*;
-use nice_plug_egui::{
-    EguiNiceSettings, EguiState, create_egui_editor, resizable_window::ResizableWindow,
+use nice_plug_iced::iced::core::border::Radius;
+use nice_plug_iced::iced::widget::scrollable::{Direction, Scrollbar};
+use nice_plug_iced::iced::widget::{
+    Button, Space, button, column, container, mouse_area, row, scrollable, text,
+};
+use nice_plug_iced::iced::{
+    self, Alignment, Background, Border, Color, Element, Length, PollSubNotifier,
+};
+use nice_plug_iced::{
+    EditorSettings, EditorState as IcedEditorState, NiceGuiContext, WindowState, create_iced_editor,
 };
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
+use std::time::Duration;
 
+use iced_futures::backend::default::time::every;
+
+pub mod browser;
 pub mod channel_strip;
 pub mod fader;
 pub mod knob;
 
 // --- Mockup palette ---------------------------------------------------------
 
-pub(crate) const BG: Color32 = Color32::from_rgb(0x14, 0x15, 0x18);
-pub(crate) const HEADER_BG: Color32 = Color32::from_rgb(0x1c, 0x1e, 0x23);
-pub(crate) const HEADER_BORDER: Color32 = Color32::from_rgb(0x26, 0x28, 0x2d);
-pub(crate) const CARD_BG: Color32 = Color32::from_rgb(0x1d, 0x1f, 0x24);
-pub(crate) const CARD_BORDER: Color32 = Color32::from_rgb(0x2d, 0x31, 0x38);
-pub(crate) const FIELD_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x2c);
-pub(crate) const FIELD_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
-pub(crate) const FIELD_HOVER: Color32 = Color32::from_rgb(0x2a, 0x2e, 0x36);
-pub(crate) const TRACK_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x2c);
-pub(crate) const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf4, 0xf7);
-pub(crate) const TEXT_DIM: Color32 = Color32::from_rgb(0x8b, 0x90, 0x99);
-pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x55, 0x84, 0xc8);
-pub(crate) const KNOB_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x48);
-pub(crate) const INDICATOR: Color32 = Color32::from_rgb(0xe8, 0xec, 0xf1);
-pub(crate) const SOLO_ACTIVE: Color32 = Color32::from_rgb(0x9a, 0x8a, 0x3c);
-pub(crate) const MUTE_ACTIVE: Color32 = Color32::from_rgb(0xb0, 0x4a, 0x46);
+pub(crate) const BG: Color = Color::from_rgb8(0x14, 0x15, 0x18);
+pub(crate) const HEADER_BG: Color = Color::from_rgb8(0x1c, 0x1e, 0x23);
+pub(crate) const HEADER_BORDER: Color = Color::from_rgb8(0x26, 0x28, 0x2d);
+pub(crate) const CARD_BG: Color = Color::from_rgb8(0x1d, 0x1f, 0x24);
+pub(crate) const CARD_BORDER: Color = Color::from_rgb8(0x2d, 0x31, 0x38);
+pub(crate) const FIELD_BG: Color = Color::from_rgb8(0x23, 0x26, 0x2c);
+pub(crate) const FIELD_BORDER: Color = Color::from_rgb8(0x3a, 0x3f, 0x48);
+pub(crate) const FIELD_HOVER: Color = Color::from_rgb8(0x2a, 0x2e, 0x36);
+pub(crate) const TRACK_BG: Color = Color::from_rgb8(0x23, 0x26, 0x2c);
+pub(crate) const TEXT: Color = Color::from_rgb8(0xf2, 0xf4, 0xf7);
+pub(crate) const TEXT_DIM: Color = Color::from_rgb8(0x8b, 0x90, 0x99);
+pub(crate) const ACCENT: Color = Color::from_rgb8(0x55, 0x84, 0xc8);
+pub(crate) const KNOB_BORDER: Color = Color::from_rgb8(0x3a, 0x3f, 0x48);
+pub(crate) const INDICATOR: Color = Color::from_rgb8(0xe8, 0xec, 0xf1);
+pub(crate) const SOLO_ACTIVE: Color = Color::from_rgb8(0x9a, 0x8a, 0x3c);
+pub(crate) const MUTE_ACTIVE: Color = Color::from_rgb8(0xb0, 0x4a, 0x46);
 /// The trigger indicator circle: a note hit lights the channel regardless of
 /// its volume. Bright amber, distinct from the blue fader fill.
-pub(crate) const TRIGGER_ACTIVE: Color32 = Color32::from_rgb(0xff, 0xd9, 0x6b);
+pub(crate) const TRIGGER_ACTIVE: Color = Color::from_rgb8(0xff, 0xd9, 0x6b);
 /// The trigger indicator's resting fill: a dark warm gray that stays visible
 /// against the card background while the channel is silent.
-pub(crate) const TRIGGER_DIM: Color32 = Color32::from_rgb(0x2e, 0x2a, 0x22);
+pub(crate) const TRIGGER_DIM: Color = Color::from_rgb8(0x2e, 0x2a, 0x22);
 
 /// The header bar height in the mockup.
 const HEADER_HEIGHT: f32 = 42.0;
@@ -52,26 +60,25 @@ const HEADER_HEIGHT: f32 = 42.0;
 /// The default editor window size in logical pixels.
 const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(1240.0, 560.0);
 
-/// The smallest the editor window can be dragged to.
-const MIN_WINDOW_SIZE: Vec2 = Vec2::new(900.0, 500.0);
+/// How often the ticker fires, driving the trigger blink and LED animations.
+const TICK_INTERVAL: Duration = Duration::from_millis(40);
 
 /// Persistent editor state used to restore the window size.
-pub fn default_editor_state() -> Arc<EguiState> {
-    EguiState::from_size(WINDOW_SIZE)
+pub fn default_editor_state() -> Arc<WindowState> {
+    WindowState::from_size(WINDOW_SIZE)
 }
 
-/// GUI-only state that is not persisted (buffers for the editable text fields).
+/// GUI-only state that persists between editor opens: the things the editor
+/// needs to talk to the plugin. All GUI-only state lives in [`MyGui`].
 pub struct EditorState {
     pub params: Arc<DizmoParams>,
-    /// Whether the pan knob is shown: the multi plugin routes each channel to its own output
-    /// where pan has no effect, so it is hidden there.
+    /// Whether the pan knob is shown: the multi plugin routes each channel to
+    /// its own output where pan has no effect, so it is hidden there.
     pub show_pan: bool,
     /// Dispatches a kit load to the loader thread and returns immediately.
     pub load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
     /// Receives load results from the loader thread, polled each frame.
     pub status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
-    /// What the header reports about the current kit.
-    pub load_status: LoadStatus,
     /// Per-channel linear peak levels (as `f32` bits), written by the audio
     /// thread each block and read by the strips to light their signal LEDs.
     pub levels: Arc<[AtomicU32; NUM_CHANNELS]>,
@@ -79,27 +86,6 @@ pub struct EditorState {
     /// triggers the channel, then decays; the strips animate their channel
     /// indicator while this is lit.
     pub triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
-    /// Whether the Mappings dialog is currently open.
-    pub show_mappings: bool,
-    /// The in-window kit picker.
-    pub file_dialog: FileDialog,
-    /// A load error to display in a modal dialog, if any.
-    pub show_error: Option<String>,
-    /// A non-fatal load warning to display in a modal dialog, if any.
-    pub show_warning: Option<String>,
-}
-
-/// A `FileDialog` configured for picking a DrumGizmo `drumkit.xml`.
-fn kit_file_dialog() -> FileDialog {
-    FileDialog::new()
-        .id(egui::Id::new("dizmo-kit-picker"))
-        .title("Load DrumGizmo kit")
-        .add_file_filter_extensions("DrumGizmo kit", vec!["xml"])
-        .default_file_filter("DrumGizmo kit")
-        .as_modal(true)
-        .default_size(vec2(720.0, 480.0))
-        .min_size(vec2(480.0, 320.0))
-        .resizable(true)
 }
 
 impl EditorState {
@@ -116,13 +102,8 @@ impl EditorState {
             show_pan,
             load_kit,
             status_rx,
-            load_status: LoadStatus::Idle,
             levels,
             triggers,
-            show_mappings: false,
-            file_dialog: kit_file_dialog(),
-            show_error: None,
-            show_warning: None,
         }
     }
 }
@@ -147,7 +128,262 @@ pub enum LoadStatus {
     Failed(String),
 }
 
-/// The plugin editor: wraps the `nice-plug-egui` editor and hands it the parameter set.
+/// The messages handled by the editor program.
+#[derive(Debug, Clone, Copy)]
+pub enum Message {
+    /// A tick from the 40 ms timer, driving the blink / LED animations.
+    Tick,
+    /// The audio thread set a param or lit an indicator; poll for new state.
+    Poll,
+    FaderGesture(usize, Gesture),
+    PanGesture(usize, Gesture),
+    ToggleSolo(usize),
+    ToggleMute(usize),
+    OpenBrowser,
+    BrowserUp,
+    BrowserHome,
+    BrowserClose,
+    BrowserEntry(usize),
+    ToggleMappings,
+    DismissError,
+    DismissWarning,
+}
+
+/// The program state for the iced editor.
+pub struct MyGui {
+    /// The persistent editor state.
+    pub editor_state: IcedEditorState<EditorState>,
+    /// For sending parameter changes to the host.
+    pub nice_ctx: NiceGuiContext,
+    /// What the header reports about the current kit.
+    pub load_status: LoadStatus,
+    /// Whether the Mappings dialog is currently open.
+    pub show_mappings: bool,
+    /// A load error to display in a modal dialog, if any.
+    pub show_error: Option<String>,
+    /// A non-fatal load warning to display in a modal dialog, if any.
+    pub show_warning: Option<String>,
+    /// The in-window kit picker.
+    pub browser: browser::Browser,
+    /// Monotonic tick counter for the blink animations.
+    pub tick: u64,
+}
+
+impl MyGui {
+    fn new(editor_state: IcedEditorState<EditorState>, nice_ctx: NiceGuiContext) -> Self {
+        Self {
+            editor_state,
+            nice_ctx,
+            load_status: LoadStatus::Idle,
+            show_mappings: false,
+            show_error: None,
+            show_warning: None,
+            browser: browser::Browser::new(),
+            tick: 0,
+        }
+    }
+
+    fn update(&mut self, message: Message) {
+        match message {
+            Message::Tick => {
+                self.tick = self.tick.wrapping_add(1);
+                self.poll_status();
+            }
+            Message::Poll => self.poll_status(),
+            Message::FaderGesture(channel, gesture) => {
+                let param = &self.editor_state.params.channels[channel].fader;
+                set_nice_param(param, gesture, &self.nice_ctx.param_setter());
+            }
+            Message::PanGesture(channel, gesture) => {
+                let param = &self.editor_state.params.channels[channel].pan;
+                set_nice_param(param, gesture, &self.nice_ctx.param_setter());
+            }
+            Message::ToggleSolo(channel) => {
+                let setter = self.nice_ctx.param_setter();
+                let solo = &self.editor_state.params.channels[channel].solo;
+                setter.set_parameter(solo, !solo.value());
+            }
+            Message::ToggleMute(channel) => {
+                let setter = self.nice_ctx.param_setter();
+                let mute = &self.editor_state.params.channels[channel].mute;
+                setter.set_parameter(mute, !mute.value());
+            }
+            Message::OpenBrowser => self.browser.open(),
+            Message::BrowserUp => self.browser.up(),
+            Message::BrowserHome => self.browser.home(),
+            Message::BrowserClose => self.browser.close(),
+            Message::BrowserEntry(index) => {
+                if let Some(path) = self.browser.open_entry(index) {
+                    self.browser.close();
+                    self.load_status = LoadStatus::Loading {
+                        loaded: 0,
+                        total: 0,
+                    };
+                    (self.editor_state.load_kit)(path);
+                }
+            }
+            Message::ToggleMappings => self.show_mappings = !self.show_mappings,
+            Message::DismissError => self.show_error = None,
+            Message::DismissWarning => self.show_warning = None,
+        }
+    }
+
+    /// Drains the kit-load status channel, updating the header and opening any
+    /// error / warning dialogs.
+    fn poll_status(&mut self) {
+        let rx = match &self.editor_state.status_rx {
+            Some(rx) => rx.clone(),
+            None => return,
+        };
+        while let Ok(status) = rx.try_recv() {
+            self.load_status = match status {
+                KitStatus::Loaded {
+                    name,
+                    channels,
+                    mappings,
+                    warnings,
+                } => {
+                    if !warnings.is_empty() {
+                        self.show_warning = Some(warnings.join("\n"));
+                    }
+                    LoadStatus::Loaded {
+                        name,
+                        channels,
+                        mappings,
+                    }
+                }
+                KitStatus::Failed(message) => {
+                    self.show_error = Some(message.clone());
+                    LoadStatus::Failed(message)
+                }
+                KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },
+            };
+        }
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let mut strips = iced::widget::row![].spacing(8);
+        for index in 0..NUM_CHANNELS {
+            strips = strips.push(channel_strip::draw_strip(self, index));
+        }
+
+        let scroll = scrollable(container(strips).padding(6))
+            .direction(Direction::Both {
+                vertical: Scrollbar::new(),
+                horizontal: Scrollbar::new(),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        let base = container(column![self.header(), scroll].height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(background_style);
+
+        let base: Element<'_, Message> = base.into();
+
+        if self.browser.is_open() {
+            return iced::widget::Stack::with_children([base, browser::view(&self.browser).into()])
+                .into();
+        }
+        if self.show_mappings {
+            return iced::widget::Stack::with_children([base, mappings_dialog(self).into()]).into();
+        }
+        if let Some(message) = &self.show_error {
+            return iced::widget::Stack::with_children([
+                base,
+                modal_dialog("Error loading kit", message, Message::DismissError).into(),
+            ])
+            .into();
+        }
+        if let Some(message) = &self.show_warning {
+            return iced::widget::Stack::with_children([
+                base,
+                modal_dialog("Kit loaded with warnings", message, Message::DismissWarning).into(),
+            ])
+            .into();
+        }
+        base
+    }
+
+    /// The header bar: logo, section label, separator, Mappings button and the
+    /// kit status / LOAD KIT button at the right end.
+    fn header(&self) -> iced::widget::Container<'_, Message> {
+        let mut header_row = row![
+            text("DIZMO").size(16).color(TEXT),
+            text("CHANNELS").size(11).color(TEXT_DIM),
+            container(Space::new().width(6.0).height(28.0)).style(separator_style),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(16)
+        .padding([0, 20]);
+
+        header_row = header_row.push(self.mappings_button());
+        header_row = header_row.push(Space::new().width(Length::Fill));
+
+        let (label, color) = match &self.load_status {
+            LoadStatus::Idle => ("NO KIT LOADED".to_string(), TEXT_DIM),
+            LoadStatus::Loading { loaded, total } => (
+                if *total > 0 {
+                    format!("LOADING… ({loaded}/{total})")
+                } else {
+                    "LOADING…".to_string()
+                },
+                TEXT_DIM,
+            ),
+            LoadStatus::Loaded { name, .. } => (name.clone(), TEXT),
+            LoadStatus::Failed(message) => (message.clone(), MUTE_ACTIVE),
+        };
+        header_row = header_row.push(text(label).size(9).color(color));
+        header_row = header_row.push(self.load_kit_button());
+
+        container(header_row)
+            .width(Length::Fill)
+            .height(HEADER_HEIGHT)
+            .style(header_style)
+    }
+
+    /// The Mappings button that opens the MIDI map / channel assignment dialog.
+    fn mappings_button(&self) -> Button<'_, Message> {
+        let active = self.show_mappings;
+        button(text("MAPPINGS").size(9).color(TEXT))
+            .on_press(Message::ToggleMappings)
+            .width(Length::Fixed(76.0))
+            .style(move |_theme, status| pill_button_style(active, status))
+    }
+
+    /// The LOAD KIT button at the right end of the header.
+    fn load_kit_button(&self) -> Button<'_, Message> {
+        button(text("LOAD KIT").size(10).color(TEXT))
+            .on_press(Message::OpenBrowser)
+            .width(Length::Fixed(92.0))
+            .style(load_kit_button_style)
+    }
+}
+
+/// Free function view so `nice_plug_iced::application` gets a higher-ranked
+/// (for-any-lifetime) `ViewFn` rather than a closure with a fixed lifetime.
+fn view(state: &MyGui) -> Element<'_, Message> {
+    state.view()
+}
+
+/// Free function theme, for the same higher-ranked lifetime reason.
+fn theme(_state: &MyGui) -> iced::Theme {
+    iced::Theme::custom(
+        "DIZMO",
+        iced::theme::Palette {
+            background: BG,
+            text: TEXT,
+            primary: ACCENT,
+            success: TRIGGER_ACTIVE,
+            warning: SOLO_ACTIVE,
+            danger: MUTE_ACTIVE,
+        },
+    )
+}
+
+/// The plugin editor: wraps the `nice-plug-iced` editor and hands it the
+/// parameter set.
 pub struct DizmoEditor {
     inner: Box<dyn Editor>,
 }
@@ -160,28 +396,37 @@ impl DizmoEditor {
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
         levels: Arc<[AtomicU32; NUM_CHANNELS]>,
         triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
-        wake_tx: crossbeam_channel::Sender<egui::Context>,
+        notifier: PollSubNotifier,
     ) -> Self {
-        let egui_state = params.editor_state.clone();
+        let window_state = params.editor_state.clone();
         let editor_state =
             EditorState::new(params, show_pan, load_kit, status_rx, levels, triggers);
 
-        let inner = create_egui_editor(
-            egui_state,
+        let inner = create_iced_editor(
+            window_state,
             editor_state,
-            EguiNiceSettings::new().with_tile("DIZMO"),
-            move |ctx, _commands, _state| {
-                // Publish the egui context so the audio thread can request an
-                // immediate repaint when a note lights an indicator.
-                let _ = wake_tx.send(ctx.clone());
-                ctx.set_visuals(egui::Visuals::dark());
+            notifier,
+            EditorSettings {
+                window_title: "DIZMO".to_string(),
+                ignore_non_modifier_keys: true,
+                always_redraw: false,
             },
-            |ui, setter, _commands, state| {
-                ResizableWindow::new("dizmo-window")
-                    .min_size(MIN_WINDOW_SIZE)
-                    .show(ui, |ui| {
-                        draw_ui(ui, setter, state);
-                    });
+            move |editor_state, nice_ctx| {
+                nice_plug_iced::application(
+                    editor_state,
+                    nice_ctx,
+                    MyGui::new,
+                    |state: &mut MyGui, message: Message| state.update(message),
+                    view,
+                )
+                .theme(theme)
+                .subscription(|_| {
+                    iced::Subscription::batch([
+                        every(TICK_INTERVAL).map(|_| Message::Tick),
+                        iced::poll_events().map(|()| Message::Poll),
+                    ])
+                })
+                .run()
             },
         )
         .expect("Failed to create the DIZMO editor");
@@ -193,7 +438,6 @@ impl DizmoEditor {
 impl Default for DizmoEditor {
     fn default() -> Self {
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let (wake_tx, _wake_rx) = crossbeam_channel::unbounded();
         Self::new(
             Arc::new(DizmoParams::default()),
             true,
@@ -201,7 +445,7 @@ impl Default for DizmoEditor {
             Some(rx),
             Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
             Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
-            wake_tx,
+            PollSubNotifier::new(),
         )
     }
 }
@@ -250,152 +494,270 @@ impl Editor for DizmoEditor {
     }
 }
 
-/// Draws the complete editor: header bar and the scrollable channel strip area.
-fn draw_ui(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState) {
-    ui.set_min_width(420.0);
-    let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, BG);
+// --- Shared widget styles ---------------------------------------------------
 
-    draw_header(ui, setter, state, rect);
-
-    // Advance the cursor below the header so the scroll area covers the rest.
-    ui.allocate_exact_size(vec2(rect.width(), HEADER_HEIGHT + 6.0), Sense::hover());
-
-    let content_rect = Rect::from_min_max(
-        pos2(rect.left(), rect.top() + HEADER_HEIGHT + 6.0),
-        pos2(rect.right(), rect.bottom()),
-    );
-
-    egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.set_min_width(content_rect.width() - 12.0);
-            ui.set_min_height(content_rect.height() - 12.0);
-            ui.horizontal_top(|ui| {
-                ui.add_space(6.0);
-                for index in 0..NUM_CHANNELS {
-                    channel_strip::draw_strip(ui, setter, state, index);
-                    ui.add_space(8.0);
-                }
-            });
-        });
-
-    // The trigger indicators blink while lit and the signal LEDs animate
-    // while a channel rings, but egui only redraws on input; keep repainting
-    // while any channel is active so the animations play out. New hits wake
-    // the editor immediately via the audio thread, so a fresh hit is never
-    // missed while this cadence is idle.
-    let triggers_active = state
-        .triggers
-        .iter()
-        .any(|t| f32::from_bits(t.load(Ordering::Relaxed)) > 0.01);
-    let levels_active = state
-        .levels
-        .iter()
-        .any(|l| f32::from_bits(l.load(Ordering::Relaxed)) > 0.0005);
-    if triggers_active || levels_active {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(40));
-    }
-
-    if state.show_mappings {
-        draw_mappings_dialog(ui, state);
-    }
-
-    if state.show_error.is_some() {
-        draw_modal_dialog(
-            ui,
-            "Error loading kit",
-            RichText::new(state.show_error.as_deref().unwrap_or("")).color(TEXT),
-            &mut state.show_error,
-        );
-    }
-    if state.show_warning.is_some() {
-        draw_modal_dialog(
-            ui,
-            "Kit loaded with warnings",
-            RichText::new(state.show_warning.as_deref().unwrap_or("")).color(TEXT),
-            &mut state.show_warning,
-        );
+/// Applies an iced_audio [`Gesture`] to a nice-plug parameter through `setter`.
+fn set_nice_param<P: Param>(param: &P, gesture: Gesture, setter: &ParamSetter) {
+    match gesture {
+        Gesture::GestureStart => setter.begin_set_parameter(param),
+        Gesture::Gesturing(new_normal) => {
+            setter.set_parameter_normalized(param, new_normal.as_f32());
+        }
+        Gesture::GestureEnd => setter.end_set_parameter(param),
     }
 }
 
-/// Draws a centered, modal dialog with `title` and `message`, dismissed by the
-/// OK button, the title-bar close, the backdrop, or Esc. Clears `message` when
-/// dismissed.
-fn draw_modal_dialog(
-    ui: &mut Ui,
-    title: &str,
-    message: RichText,
-    message_slot: &mut Option<String>,
-) {
-    let mut close = false;
-    let response = egui::Modal::new(egui::Id::new(title)).show(ui.ctx(), |ui| {
-        ui.set_width(380.0);
-        ui.heading(RichText::new(title).color(TEXT));
-        ui.add_space(10.0);
-        ui.add(egui::Label::new(message).wrap());
-        ui.add_space(16.0);
-        if ui.button("OK").clicked() {
-            close = true;
-        }
-    });
-    if close || response.should_close() {
-        message_slot.take();
+fn background_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let _ = theme;
+    iced::widget::container::Style {
+        background: Some(Background::Color(BG)),
+        ..Default::default()
     }
+}
+
+fn header_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let _ = theme;
+    iced::widget::container::Style {
+        background: Some(Background::Color(HEADER_BG)),
+        border: Border {
+            color: HEADER_BORDER,
+            width: 1.0,
+            radius: Radius::from(0.0),
+        },
+        ..Default::default()
+    }
+}
+
+fn separator_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let _ = theme;
+    iced::widget::container::Style {
+        background: Some(Background::Color(INDICATOR)),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: Radius::from(3.0),
+        },
+        ..Default::default()
+    }
+}
+
+/// The pill style shared by the header buttons: flat field fill, with the
+/// accent border while pressed-open or hovered.
+fn pill_button_style(
+    active: bool,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let (background, border) = if active {
+        (FIELD_BG, ACCENT)
+    } else if status == iced::widget::button::Status::Hovered {
+        (FIELD_HOVER, ACCENT)
+    } else {
+        (FIELD_BG, FIELD_BORDER)
+    };
+    iced::widget::button::Style {
+        background: Some(Background::Color(background)),
+        text_color: TEXT,
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        ..Default::default()
+    }
+}
+
+fn load_kit_button_style(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let _ = theme;
+    let (background, border) = match status {
+        iced::widget::button::Status::Hovered => (FIELD_BG, ACCENT),
+        _ => (TRACK_BG, FIELD_BORDER),
+    };
+    iced::widget::button::Style {
+        background: Some(Background::Color(background)),
+        text_color: TEXT,
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        ..Default::default()
+    }
+}
+
+fn panel_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let _ = theme;
+    iced::widget::container::Style {
+        background: Some(Background::Color(CARD_BG)),
+        border: Border {
+            color: CARD_BORDER,
+            width: 1.0,
+            radius: Radius::from(6.0),
+        },
+        ..Default::default()
+    }
+}
+
+fn backdrop_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let _ = theme;
+    iced::widget::container::Style {
+        background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.55))),
+        ..Default::default()
+    }
+}
+
+// --- Modal dialogs ----------------------------------------------------------
+
+/// A centered, modal dialog with `title` and `message`, dismissed by the OK
+/// button or by clicking the backdrop.
+fn modal_dialog<'a>(
+    title: &'a str,
+    message: &'a str,
+    dismiss: Message,
+) -> iced::widget::Stack<'a, Message> {
+    let panel = container(
+        column![
+            text(title).size(14).color(TEXT),
+            iced::widget::rule::horizontal(1),
+            text(message)
+                .size(11)
+                .color(TEXT)
+                .width(Length::Fixed(360.0))
+                .wrapping(iced::core::text::Wrapping::Word),
+            button(text("OK").size(11).color(Color::WHITE))
+                .on_press(dismiss)
+                .style(ok_button_style),
+        ]
+        .spacing(10),
+    )
+    .width(Length::Fixed(380.0))
+    .padding(16)
+    .style(panel_style);
+
+    dialog_stack(panel, dismiss)
 }
 
 /// The Mappings dialog: MIDI note map and channel assignment per instrument.
-fn draw_mappings_dialog(ui: &mut Ui, state: &mut EditorState) {
+fn mappings_dialog<'a>(state: &'a MyGui) -> iced::widget::Stack<'a, Message> {
     let (title, body) = match &state.load_status {
-        LoadStatus::Loaded { name, mappings, .. } => (name.clone(), Some(mappings.as_slice())),
-        _ => ("Mappings".to_string(), None),
+        LoadStatus::Loaded { name, mappings, .. } => (name.as_str(), Some(mappings.as_slice())),
+        _ => ("Mappings", None),
     };
 
-    egui::Window::new(title)
-        .title_bar(true)
-        .collapsible(false)
-        .resizable(true)
-        .default_size(vec2(520.0, 320.0))
-        .min_size(vec2(360.0, 200.0))
-        .default_pos(pos2(220.0, 80.0))
-        .open(&mut state.show_mappings)
-        .show(ui.ctx(), |ui| {
-            let Some(mappings) = body else {
-                ui.label(
-                    RichText::new("Load a kit to see its MIDI and channel mappings")
-                        .color(TEXT_DIM),
+    let mut content = column![
+        text(title).size(14).color(TEXT),
+        iced::widget::rule::horizontal(1),
+    ]
+    .spacing(10);
+
+    match body {
+        Some(mappings) if !mappings.is_empty() => {
+            content = content.push(
+                row![
+                    text("Instrument")
+                        .size(10)
+                        .color(TEXT_DIM)
+                        .width(Length::Fixed(200.0)),
+                    text("MIDI notes")
+                        .size(10)
+                        .color(TEXT_DIM)
+                        .width(Length::Fixed(160.0)),
+                    text("Channel map")
+                        .size(10)
+                        .color(TEXT_DIM)
+                        .width(Length::Fill),
+                ]
+                .spacing(8),
+            );
+            let mut list = column![].spacing(4);
+            for mapping in mappings {
+                list = list.push(
+                    row![
+                        text(&mapping.instrument)
+                            .size(11)
+                            .color(TEXT)
+                            .width(Length::Fixed(200.0)),
+                        text(note_text(&mapping.notes))
+                            .size(11)
+                            .color(TEXT)
+                            .width(Length::Fixed(160.0)),
+                        text(channel_text(&mapping.channel_map))
+                            .size(11)
+                            .color(TEXT_DIM)
+                            .width(Length::Fill),
+                    ]
+                    .spacing(8),
                 );
-                return;
-            };
-
-            if mappings.is_empty() {
-                ui.label(RichText::new("None").color(TEXT_DIM));
-                return;
             }
+            content = content.push(
+                scrollable(container(list).width(Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            );
+        }
+        _ => {
+            content = content.push(
+                text("Load a kit to see its MIDI and channel mappings")
+                    .size(11)
+                    .color(TEXT_DIM),
+            );
+        }
+    }
 
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Grid::new("dizmo-mappings-grid")
-                        .num_columns(3)
-                        .striped(true)
-                        .spacing(vec2(18.0, 4.0))
-                        .show(ui, |ui| {
-                            for header in ["Instrument", "MIDI notes", "Channel map"] {
-                                ui.label(RichText::new(header).strong().color(TEXT_DIM));
-                            }
-                            ui.end_row();
+    let panel = container(content)
+        .width(Length::Fixed(560.0))
+        .height(Length::Fixed(360.0))
+        .padding(16)
+        .style(panel_style);
 
-                            for mapping in mappings {
-                                ui.label(RichText::new(&mapping.instrument).color(TEXT));
-                                ui.label(note_text(&mapping.notes));
-                                ui.label(channel_text(&mapping.channel_map));
-                                ui.end_row();
-                            }
-                        });
-                });
-        });
+    dialog_stack(panel, Message::ToggleMappings)
+}
+
+/// Stacks a modal `panel` over a dim backdrop that dismisses on click.
+fn dialog_stack<'a>(
+    panel: iced::widget::Container<'a, Message>,
+    dismiss: Message,
+) -> iced::widget::Stack<'a, Message> {
+    let backdrop = mouse_area(container(
+        Space::new().width(Length::Fill).height(Length::Fill),
+    ))
+    .on_press(dismiss);
+    iced::widget::Stack::with_children([
+        container(backdrop)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(backdrop_style)
+            .into(),
+        container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center)
+            .into(),
+    ])
+}
+
+fn ok_button_style(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let _ = theme;
+    let (background, border) = match status {
+        iced::widget::button::Status::Hovered => (FIELD_HOVER, ACCENT),
+        _ => (FIELD_BG, FIELD_BORDER),
+    };
+    iced::widget::button::Style {
+        background: Some(Background::Color(background)),
+        text_color: Color::WHITE,
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        ..Default::default()
+    }
 }
 
 /// "C3 · D#3 …" for a set of MIDI notes, or "—" when unmapped.
@@ -430,243 +792,4 @@ fn midi_note_name(note: u8) -> String {
     ];
     let octave = (note / 12).saturating_sub(1);
     format!("{}{}", NAMES[(note % 12) as usize], octave)
-}
-
-fn draw_header(ui: &mut Ui, _setter: &ParamSetter, state: &mut EditorState, rect: Rect) {
-    let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER_HEIGHT));
-    let center_y = header.center().y;
-
-    ui.painter().rect_filled(header, 0.0, HEADER_BG);
-    ui.painter().rect_filled(
-        Rect::from_min_max(
-            pos2(rect.left(), header.bottom()),
-            pos2(rect.right(), header.bottom() + 1.0),
-        ),
-        0.0,
-        HEADER_BORDER,
-    );
-
-    // DIZMO logo
-    ui.painter().text(
-        pos2(rect.left() + 20.0, center_y),
-        Align2::LEFT_CENTER,
-        "DIZMO",
-        FontId::proportional(16.0),
-        TEXT,
-    );
-
-    // CHANNELS section label
-    ui.painter().text(
-        pos2(rect.left() + 112.0, center_y + 1.0),
-        Align2::LEFT_CENTER,
-        "CHANNELS",
-        FontId::proportional(11.0),
-        TEXT_DIM,
-    );
-
-    // Separator pill
-    ui.painter().rect_filled(
-        Rect::from_min_size(
-            pos2(rect.left() + 196.0, header.top() + 7.0),
-            vec2(6.0, 28.0),
-        ),
-        3.0,
-        INDICATOR,
-    );
-
-    draw_mappings_button(ui, state, pos2(rect.left() + 210.0, header.top() + 10.0));
-    draw_load_kit(ui, state, rect);
-}
-
-/// The Mappings button that opens the MIDI map / channel assignment dialog.
-fn draw_mappings_button(ui: &mut Ui, state: &mut EditorState, origin: Pos2) {
-    let pill = Rect::from_min_size(origin, vec2(76.0, 22.0));
-    let response = ui.interact(pill, ui.id().with("dizmo-mappings"), Sense::click());
-    let hovered = response.hovered();
-    let fill = if hovered { FIELD_HOVER } else { FIELD_BG };
-    let stroke = if state.show_mappings {
-        ACCENT
-    } else {
-        FIELD_BORDER
-    };
-    ui.painter().rect_filled(pill, 4.0, fill);
-    ui.painter()
-        .rect_stroke(pill, 4.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
-    ui.painter().text(
-        pill.center(),
-        Align2::CENTER_CENTER,
-        "MAPPINGS",
-        FontId::proportional(9.0),
-        TEXT,
-    );
-    if response.clicked() {
-        state.show_mappings = !state.show_mappings;
-    }
-    let _ = response.on_hover_text("Show MIDI note and channel mappings");
-}
-
-/// The kit load button and current kit status at the right end of the header.
-fn draw_load_kit(ui: &mut Ui, state: &mut EditorState, rect: Rect) {
-    // Poll the loader for finished loads.
-    if let Some(status_rx) = &state.status_rx {
-        while let Ok(status) = status_rx.try_recv() {
-            state.load_status = match status {
-                KitStatus::Loaded {
-                    name,
-                    channels,
-                    mappings,
-                    warnings,
-                } => {
-                    if !warnings.is_empty() {
-                        state.show_warning = Some(warnings.join("\n"));
-                    }
-                    LoadStatus::Loaded {
-                        name,
-                        channels,
-                        mappings,
-                    }
-                }
-                KitStatus::Failed(message) => {
-                    state.show_error = Some(message.clone());
-                    LoadStatus::Failed(message)
-                }
-                KitStatus::Progress { loaded, total } => LoadStatus::Loading { loaded, total },
-            };
-        }
-    }
-
-    // egui only redraws on input, so a kit loading in the background would
-    // never be shown. Keep repainting while the load runs so the final
-    // status arrives and the channel names / header update promptly.
-    if matches!(state.load_status, LoadStatus::Loading { .. }) {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(50));
-    }
-
-    let center_y = rect.top() + HEADER_HEIGHT / 2.0;
-    let button = Rect::from_min_size(
-        pos2(rect.right() - 12.0 - 92.0, center_y - 11.0),
-        vec2(92.0, 22.0),
-    );
-
-    let (label, tooltip) = match &state.load_status {
-        LoadStatus::Idle => ("NO KIT LOADED".to_string(), None),
-        LoadStatus::Loading { loaded, total } => (
-            if *total > 0 {
-                format!("LOADING… ({loaded}/{total})")
-            } else {
-                "LOADING…".to_string()
-            },
-            None,
-        ),
-        LoadStatus::Loaded { name, .. } => (name.clone(), Some(name.clone())),
-        LoadStatus::Failed(message) => (message.clone(), Some(message.clone())),
-    };
-    let label_color = match &state.load_status {
-        LoadStatus::Idle | LoadStatus::Loading { .. } => TEXT_DIM,
-        LoadStatus::Loaded { .. } => TEXT,
-        LoadStatus::Failed(_) => MUTE_ACTIVE,
-    };
-    draw_status_label(
-        ui,
-        label,
-        FontId::proportional(9.0),
-        label_color,
-        button.left() - 10.0,
-        center_y,
-        tooltip,
-    );
-
-    let response = ui.interact(button, ui.id().with("dizmo-load-kit"), Sense::click());
-    let clicked = response.clicked();
-    let hovered = response.hovered();
-    ui.painter()
-        .rect_filled(button, 4.0, if hovered { FIELD_BG } else { TRACK_BG });
-    ui.painter().rect_stroke(
-        button,
-        4.0,
-        Stroke::new(1.0, if hovered { ACCENT } else { FIELD_BORDER }),
-        StrokeKind::Inside,
-    );
-    ui.painter().text(
-        button.center(),
-        Align2::CENTER_CENTER,
-        "LOAD KIT",
-        FontId::proportional(10.0),
-        TEXT,
-    );
-    let _ = response.on_hover_text("Load a DrumGizmo kit (drumkit.xml)");
-
-    if clicked {
-        state.file_dialog.pick_file();
-    }
-
-    state.file_dialog.update(ui.ctx());
-    if let Some(path) = state.file_dialog.take_picked() {
-        state.load_status = LoadStatus::Loading {
-            loaded: 0,
-            total: 0,
-        };
-        (state.load_kit)(path);
-    }
-}
-
-/// Draws the kit status label, right-aligned ending at `right`, truncating it
-/// with an ellipsis if it would run into the DIZMO logo. When `tooltip` is
-/// set (loaded kit name or a load error) the full text is shown on hover.
-fn draw_status_label(
-    ui: &mut Ui,
-    text: String,
-    font_id: FontId,
-    color: Color32,
-    right: f32,
-    center_y: f32,
-    tooltip: Option<String>,
-) {
-    let max_width = (right - 170.0).max(250.0);
-    let text = truncate_to_width(ui, text, &font_id, max_width);
-    let galley = ui
-        .ctx()
-        .fonts_mut(|fonts| fonts.layout_no_wrap(text, font_id.clone(), color));
-    let (width, height) = (galley.size().x, galley.size().y);
-    ui.painter()
-        .galley(pos2(right - width, center_y - height / 2.0), galley, color);
-
-    if let Some(tooltip) = tooltip {
-        let label_rect = Rect::from_min_max(
-            pos2((right - width).max(0.0), center_y - 11.0),
-            pos2(right, center_y + 11.0),
-        );
-        let response = ui.interact(
-            label_rect,
-            ui.id().with("dizmo-load-status"),
-            Sense::hover(),
-        );
-        let _ = response.on_hover_text(tooltip);
-    }
-}
-
-/// Truncates `text` to `max_width` pixels, appending an ellipsis.
-fn truncate_to_width(ui: &Ui, text: String, font_id: &FontId, max_width: f32) -> String {
-    let fits = |candidate: &str| {
-        ui.ctx()
-            .fonts_mut(|fonts| {
-                fonts.layout_no_wrap(candidate.to_string(), font_id.clone(), Color32::WHITE)
-            })
-            .size()
-            .x
-            <= max_width
-    };
-    if fits(&text) {
-        return text;
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    while chars.len() > 1 {
-        chars.pop();
-        let candidate: String = chars.iter().chain(std::iter::once(&'…')).collect();
-        if fits(&candidate) {
-            return candidate;
-        }
-    }
-    "…".to_string()
 }

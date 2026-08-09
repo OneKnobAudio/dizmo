@@ -5,9 +5,15 @@ edition.workspace = true
 
 [dependencies]
 nice-plug = "0.2.3"
-nice-plug-egui = { version = "0.3", features = ["opengl"] }
-egui = "0.35"
-egui-file-dialog = "0.14"
+# `smol` enables iced's `time::every` subscription, which drives the trigger
+# blink and level LED animations; the `canvas` feature is required for the
+# iced_audio widgets and `image` for their renderer support.
+nice-plug-iced = { version = "0.2.0", features = ["canvas", "image", "smol"] }
+iced_audio = { version = "0.15.0", features = ["nice-plug"] }
+# Direct access to `iced_futures::backend::default::time::every`, the 40 ms
+# ticker that drives the trigger blink and level LED animations. The `smol`
+# feature is enabled transitively via nice-plug-iced above.
+iced_futures = "0.14"
 roxmltree = "0.20"
 thiserror = "2"
 hound = "3.5"

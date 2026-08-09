@@ -1,6 +1,16 @@
-use crate::ui::{ACCENT, CARD_BG, INDICATOR, KNOB_BORDER, TEXT, TEXT_DIM, TRACK_BG};
-use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
+//! The vertical volume fader, built on the iced_audio `VSlider`.
+
+use crate::ui::{ACCENT, KNOB_BORDER, Message, TEXT_DIM};
+use iced::widget::{
+    canvas,
+    canvas::{Frame, Path, Program, Stroke, Text as CanvasText},
+    container,
+};
+use iced::{Color, Length, Point, alignment, widget::Stack};
+use iced_audio::{NormalParam, v_slider::VSlider};
 use nice_plug::prelude::*;
+use nice_plug_iced::iced;
+use std::sync::atomic::Ordering;
 
 /// The fader range in dB: minimum (fully down) and maximum (fully up).
 pub const FADER_MIN_DB: f32 = -18.0;
@@ -9,140 +19,132 @@ pub const FADER_MAX_DB: f32 = 6.0;
 /// A peak level (linear 0..1) at or above which the signal LED lights up.
 const LED_THRESHOLD: f32 = 0.0001;
 
-/// Draws a vertical volume fader for one channel.
-///
-/// * 0 dB sits at the vertical center of the track.
-/// * Dragging vertically sets the fader value; double clicking resets it to 0 dB.
-/// * The filled portion runs from the bottom of the track up to the fader position.
-/// * `level` (linear peak 0..1) drives a small signal LED at the top of the track.
-pub fn show_fader(
-    ui: &mut Ui,
-    setter: &ParamSetter,
-    fader: &FloatParam,
-    channel: usize,
-    rect: Rect,
-    level: f32,
-) {
-    let response = ui.interact(
-        rect,
-        ui.id().with(("dizmo-fader", channel)),
-        Sense::click_and_drag(),
-    );
+/// The top of the track inside the decoration canvas, leaving room for the
+/// signal LED.
+const TRACK_TOP: f32 = 22.0;
 
-    let track_width = 10.0;
-    let track = Rect::from_min_max(
-        pos2(rect.center().x - track_width / 2.0, rect.top() + 24.0),
-        pos2(rect.center().x + track_width / 2.0, rect.bottom() - 16.0),
-    );
-
-    if response.drag_started() {
-        setter.begin_set_parameter(fader);
-    }
-    if response.dragged()
-        && let Some(pos) = response.interact_pointer_pos()
-    {
-        let span = FADER_MAX_DB - FADER_MIN_DB;
-        let db = FADER_MAX_DB - (pos.y - track.top()) / track.height() * span;
-        setter.set_parameter(
-            fader,
-            util::db_to_gain(db.clamp(FADER_MIN_DB, FADER_MAX_DB)),
-        );
-    }
-    if response.drag_stopped() {
-        setter.end_set_parameter(fader);
-    }
-    if response.double_clicked() {
-        setter.begin_set_parameter(fader);
-        setter.set_parameter(fader, util::db_to_gain(0.0));
-        setter.end_set_parameter(fader);
-    }
-
+/// Builds the fader block: an iced_audio `VSlider` overlaid on a canvas that
+/// draws the dB scale labels, the 0 dB line and the signal LED.
+pub fn show_fader<'a>(state: &'a crate::ui::MyGui, channel: usize) -> Stack<'a, Message> {
+    let fader = &state.editor_state.params.channels[channel].fader;
     let db = util::gain_to_db(fader.value());
-    let span = FADER_MAX_DB - FADER_MIN_DB;
-    let normalized = ((db - FADER_MIN_DB) / span).clamp(0.0, 1.0);
-    let handle_y = track.bottom() - normalized * track.height();
-    let zero_y = track.bottom() - (0.0 - FADER_MIN_DB) / span * track.height();
+    let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
 
-    let painter = ui.painter();
-    let label_x = track.left() - 6.0;
+    let slider = VSlider::new(NormalParam::from_nice(fader))
+        .width(Length::Fixed(24.0))
+        .height(Length::Fill)
+        .on_gesture(move |gesture| Message::FaderGesture(channel, gesture));
 
-    // Scale labels: +6 / 0 / -18
-    for (fraction, label) in [
-        (1.0, "+6"),
-        ((0.0 - FADER_MIN_DB) / span, "0"),
-        (0.0, "-18"),
-    ] {
-        let y = track.bottom() - fraction * track.height();
-        painter.text(
-            pos2(label_x, y),
-            Align2::RIGHT_CENTER,
-            label,
-            FontId::proportional(7.0),
-            TEXT_DIM,
-        );
-    }
+    let decorations = canvas::Canvas::new(FaderDecoration::new(db, level))
+        .width(Length::Fill)
+        .height(Length::Fill);
 
-    // Track and zero tick
-    painter.rect_filled(track, 5.0, TRACK_BG);
-    painter.rect_filled(
-        Rect::from_min_size(pos2(track.left() - 5.0, zero_y - 0.5), vec2(3.0, 1.0)),
-        0.0,
-        KNOB_BORDER,
-    );
+    Stack::with_children([
+        decorations.into(),
+        container(slider)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .into(),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+}
 
-    // Fill from the bottom of the track up to the fader position
-    let fill = Rect::from_min_max(pos2(track.left(), handle_y), track.right_bottom());
-    if fill.height() > 0.0 {
-        painter.rect_filled(fill, 5.0, ACCENT);
-    }
-
-    // Handle cap with a small tick
-    let cap = Rect::from_center_size(pos2(rect.center().x, handle_y), vec2(32.0, 12.0));
-    painter.rect_filled(cap, 3.0, INDICATOR);
-    painter.line_segment(
-        [
-            pos2(cap.center().x, cap.top()),
-            pos2(cap.center().x, cap.bottom()),
-        ],
-        Stroke::new(1.5, CARD_BG),
-    );
-
-    // Signal LED: lights up when the channel is receiving audio, brighter with level
-    let led_center = pos2(rect.center().x, track.top() - 12.0);
-    let lit = level >= LED_THRESHOLD;
-    let led_color = if lit {
-        let intensity = (level * 3.0).clamp(0.0, 1.0);
-        Color32::from_rgb(
-            (intensity * 255.0) as u8,
-            (intensity * 230.0) as u8,
-            (intensity * 120.0) as u8,
-        )
-    } else {
-        Color32::from_rgb(40, 40, 40)
-    };
-    painter.circle_filled(led_center, 3.5, led_color);
-    painter.circle_stroke(led_center, 3.5, Stroke::new(1.0, KNOB_BORDER));
-
-    // Current value readout below the LED
-    let value_text = if db.abs() < 0.05 {
+/// The current fader value as a display string, e.g. `0.0 dB` or `-5.3 dB`.
+pub fn fader_readout(fader: &FloatParam) -> String {
+    let db = util::gain_to_db(fader.value());
+    if db.abs() < 0.05 {
         "0.0 dB".to_string()
     } else {
         format!("{db:+.1} dB")
-    };
-    painter.text(
-        pos2(rect.center().x, track.top() - 20.0),
-        Align2::CENTER_CENTER,
-        value_text,
-        FontId::proportional(8.0),
-        TEXT,
-    );
+    }
+}
 
-    // Zero line
-    painter.line_segment(
-        [
-            pos2(track.left() - 2.0, zero_y),
-            pos2(track.right() + 2.0, zero_y),
-        ],
-        Stroke::new(1.0, ACCENT),
-    );
+/// Draws the scale labels, the 0 dB line and the signal LED behind the slider.
+struct FaderDecoration {
+    db: f32,
+    level: f32,
+}
+
+impl FaderDecoration {
+    fn new(db: f32, level: f32) -> Self {
+        Self { db, level }
+    }
+
+    /// The y position (inside the canvas) for a given dB value.
+    fn y_for_db(&self, db: f32, track_bottom: f32) -> f32 {
+        let span = FADER_MAX_DB - FADER_MIN_DB;
+        let normalized = ((db - FADER_MIN_DB) / span).clamp(0.0, 1.0);
+        track_bottom - normalized * (track_bottom - TRACK_TOP)
+    }
+}
+
+impl<Message> Program<Message> for FaderDecoration {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center_x = bounds.width / 2.0;
+        let track_bottom = bounds.height - 6.0;
+
+        // dB scale labels: +6 at the top, 0 at the center, -18 at the bottom.
+        for (db, label) in [(FADER_MAX_DB, "+6"), (0.0, "0"), (FADER_MIN_DB, "-18")] {
+            let y = self.y_for_db(db, track_bottom);
+            frame.fill_text(CanvasText {
+                content: label.to_string(),
+                position: Point::new(6.0, y),
+                color: TEXT_DIM,
+                size: iced::Pixels::from(7.0),
+                align_x: iced::core::text::Alignment::Left,
+                align_y: alignment::Vertical::Center,
+                ..Default::default()
+            });
+        }
+
+        // The 0 dB line, from the labels over to the slider rail.
+        let zero_y = self.y_for_db(0.0, track_bottom);
+        frame.stroke(
+            &Path::line(Point::new(16.0, zero_y), Point::new(center_x, zero_y)),
+            Stroke::default().with_color(ACCENT).with_width(1.0),
+        );
+
+        // A short marker on the rail at the current fader position.
+        let current_y = self.y_for_db(self.db, track_bottom);
+        frame.stroke(
+            &Path::line(
+                Point::new(center_x - 8.0, current_y),
+                Point::new(center_x, current_y),
+            ),
+            Stroke::default().with_color(ACCENT).with_width(2.0),
+        );
+
+        // Signal LED at the top of the track.
+        let lit = self.level >= LED_THRESHOLD;
+        let led_color = if lit {
+            let intensity = (self.level * 3.0).clamp(0.0, 1.0);
+            Color::from_rgb8(
+                (intensity * 255.0) as u8,
+                (intensity * 230.0) as u8,
+                (intensity * 120.0) as u8,
+            )
+        } else {
+            Color::from_rgb8(40, 40, 40)
+        };
+        let led_center = Point::new(center_x, 10.0);
+        frame.fill(&Path::circle(led_center, 3.5), led_color);
+        frame.stroke(
+            &Path::circle(led_center, 3.5),
+            Stroke::default().with_color(KNOB_BORDER).with_width(1.0),
+        );
+
+        vec![frame.into_geometry()]
+    }
 }

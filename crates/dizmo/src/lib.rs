@@ -1,4 +1,5 @@
 use nice_plug::prelude::*;
+use nice_plug_iced::iced::PollSubNotifier;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -77,13 +78,9 @@ struct AudioCore {
     /// routes a new voice to the channel, then decays each block. Shared with
     /// the editor to animate its per-channel trigger indicators.
     triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
-    /// The egui context the editor publishes once its window is open; used to
-    /// wake the editor for an immediate repaint when a note lights an
-    /// indicator (egui only redraws on input or a scheduled repaint).
-    wake_rx: Option<crossbeam_channel::Receiver<egui::Context>>,
-    /// The last context received from `wake_rx`, cached so the audio thread
-    /// never blocks on the channel.
-    wake_ctx: Option<egui::Context>,
+    /// An atomic flag the audio thread sets when a note lights an indicator;
+    /// the iced editor polls it before every draw and redraws when set.
+    notifier: PollSubNotifier,
 }
 
 impl AudioCore {
@@ -99,8 +96,7 @@ impl AudioCore {
             host_sample_rate: Arc::new(AtomicU32::new(0)),
             levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
             triggers: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
-            wake_rx: None,
-            wake_ctx: None,
+            notifier: PollSubNotifier::new(),
         }
     }
 
@@ -185,22 +181,9 @@ impl AudioCore {
                 self.triggers[index].store(1.0f32.to_bits(), Ordering::Relaxed);
             }
         }
-        self.wake_editor();
-    }
-
-    /// Asks the editor to redraw immediately. Realtime-safe: the context is
-    /// polled with a lock-free, non-blocking `try_recv` and `request_repaint`
-    /// only sets an atomic flag, so no locks or allocations happen here.
-    fn wake_editor(&mut self) {
-        let Some(rx) = &self.wake_rx else {
-            return;
-        };
-        if let Ok(ctx) = rx.try_recv() {
-            self.wake_ctx = Some(ctx);
-        }
-        if let Some(ctx) = &self.wake_ctx {
-            ctx.request_repaint();
-        }
+        // Realtime-safe: `notify` only sets an atomic flag that the editor
+        // polls before drawing.
+        self.notifier.notify();
     }
 
     /// Tells the editor that `engine` is the current kit, so the header and
@@ -373,8 +356,7 @@ macro_rules! impl_dizmo_plugin {
                 let status_rx = self.core.status_rx.take();
                 let levels = self.core.levels.clone();
                 let triggers = self.core.triggers.clone();
-                let (wake_tx, wake_rx) = crossbeam_channel::unbounded();
-                self.core.wake_rx = Some(wake_rx);
+                let notifier = self.core.notifier.clone();
                 Some(Box::new(ui::DizmoEditor::new(
                     self.params.clone(),
                     $show_pan,
@@ -382,7 +364,7 @@ macro_rules! impl_dizmo_plugin {
                     status_rx,
                     levels,
                     triggers,
-                    wake_tx,
+                    notifier,
                 )))
             }
 

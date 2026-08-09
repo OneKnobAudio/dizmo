@@ -1,11 +1,20 @@
-use crate::ui::fader::show_fader;
-use crate::ui::knob::{KNOB_RADIUS, show_knob};
+//! A single channel strip: indicator label, solo/mute, pan knob, fader and
+//! trigger indicator, matching the mockup layout.
+
+use crate::ui::fader::{fader_readout, show_fader};
+use crate::ui::knob::show_knob;
 use crate::ui::{
-    CARD_BG, CARD_BORDER, EditorState, FIELD_BG, FIELD_BORDER, LoadStatus, MUTE_ACTIVE,
-    SOLO_ACTIVE, TEXT, TEXT_DIM, TRIGGER_ACTIVE, TRIGGER_DIM,
+    ACCENT, CARD_BG, CARD_BORDER, FIELD_BG, FIELD_BORDER, FIELD_HOVER, LoadStatus, MUTE_ACTIVE,
+    Message, MyGui, SOLO_ACTIVE, TEXT, TRIGGER_ACTIVE, TRIGGER_DIM,
 };
-use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use nice_plug::prelude::*;
+use iced::core::border::Radius;
+use iced::widget::{
+    Button, Container, button, canvas,
+    canvas::{Frame, Path, Program, Stroke},
+    column, container, row, text,
+};
+use iced::{Background, Border, Color, Length, Padding, Point};
+use nice_plug_iced::iced;
 use std::sync::atomic::Ordering;
 
 /// Width of one channel strip card.
@@ -14,202 +23,114 @@ pub const STRIP_WIDTH: f32 = 128.0;
 /// Height of one channel strip card.
 pub const STRIP_HEIGHT: f32 = 460.0;
 
-/// Width of the right-edge zone reserved for the trigger indicator circle,
-/// kept clear of the fader track and its dB readout.
-const INDICATOR_ZONE_WIDTH: f32 = 22.0;
-
-/// Soft halo drawn around the trigger circle while it is lit.
-fn trigger_glow() -> Color32 {
-    Color32::from_rgba_unmultiplied(0xff, 0xd9, 0x6b, 110)
-}
-
-/// Draws a single channel strip matching the mockup layout:
-/// number badge, editable name, solo/mute, choke assign, pan knob and vertical fader.
-pub fn draw_strip(ui: &mut Ui, setter: &ParamSetter, state: &mut EditorState, index: usize) {
-    let params = state.params.clone();
-    let (card_rect, _) = ui.allocate_exact_size(vec2(STRIP_WIDTH, STRIP_HEIGHT), Sense::hover());
-
-    ui.painter().rect_filled(card_rect, 8.0, CARD_BG);
-    ui.painter().rect_stroke(
-        card_rect,
-        8.0,
-        Stroke::new(1.0, CARD_BORDER),
-        StrokeKind::Inside,
-    );
-
-    let inner = Rect::from_min_max(
-        pos2(card_rect.left() + 8.0, card_rect.top() + 8.0),
-        pos2(card_rect.right() - 8.0, card_rect.bottom() - 8.0),
-    );
-    let center_x = card_rect.center().x;
-
-    // --- Channel indicator: the instrument assigned to this channel by the
-    // loaded kit, or the channel number while no kit is loaded ---
-    ui.painter().text(
-        pos2(center_x, inner.top() + 16.0),
-        Align2::CENTER_CENTER,
-        channel_indicator_label(state, index),
-        FontId::proportional(12.0),
-        TEXT,
-    );
-
-    // --- Solo / Mute ---
-    let button_y = inner.top() + 36.0;
-    let button_gap = 6.0;
-    let button_width = (inner.width() - button_gap) / 2.0;
-    let solo_rect = Rect::from_min_size(pos2(inner.left(), button_y), vec2(button_width, 24.0));
-    let mute_rect = Rect::from_min_size(
-        pos2(inner.left() + button_width + button_gap, button_y),
-        vec2(button_width, 24.0),
-    );
-
-    let solo_response = rounded_toggle(
-        ui,
-        solo_rect,
-        index,
-        "solo",
-        params.channels[index].solo.value(),
-        "S",
-        SOLO_ACTIVE,
-    );
-    if solo_response.clicked() {
-        toggle_bool(setter, &params.channels[index].solo);
-    }
-
-    let mute_response = rounded_toggle(
-        ui,
-        mute_rect,
-        index,
-        "mute",
-        params.channels[index].mute.value(),
-        "M",
-        MUTE_ACTIVE,
-    );
-    if mute_response.clicked() {
-        toggle_bool(setter, &params.channels[index].mute);
-    }
-
-    // Choke is defined by the kit, no UI for configuration
-
-    // --- Separator ---
-    let separator_y = mute_rect.bottom() + 6.0;
-    ui.painter().line_segment(
-        [
-            pos2(inner.left(), separator_y),
-            pos2(inner.right(), separator_y),
-        ],
-        Stroke::new(1.0, CARD_BORDER),
-    );
-
-    // --- Pan knob with L/R labels (stereo plugin only) ---
-    let fader_top = if state.show_pan {
-        let knob_center = pos2(center_x, separator_y + 26.0);
-        let knob_rect =
-            Rect::from_center_size(knob_center, vec2(KNOB_RADIUS * 3.0, KNOB_RADIUS * 3.0));
-        show_knob(ui, setter, &params.channels[index].pan, index, knob_rect);
-        ui.painter().text(
-            pos2(inner.left() + 4.0, knob_center.y),
-            Align2::LEFT_CENTER,
-            "L",
-            FontId::proportional(9.0),
-            TEXT_DIM,
-        );
-        ui.painter().text(
-            pos2(inner.right() - 4.0, knob_center.y),
-            Align2::RIGHT_CENTER,
-            "R",
-            FontId::proportional(9.0),
-            TEXT_DIM,
-        );
-        knob_rect.bottom() + 8.0
-    } else {
-        separator_y + 8.0
-    };
-
-    // --- Vertical fader ---
-    let fader_rect = Rect::from_min_max(
-        pos2(inner.left(), fader_top),
-        pos2(inner.right() - INDICATOR_ZONE_WIDTH - 4.0, inner.bottom()),
-    );
-    let level = f32::from_bits(state.levels[index].load(Ordering::Relaxed));
-    show_fader(
-        ui,
-        setter,
-        &params.channels[index].fader,
-        index,
-        fader_rect,
-        level,
-    );
-
-    // --- Trigger indicator: a circle in the zone to the right of the fader
-    // that blinks brightly while a note triggers this channel. It depends only
-    // on whether a hit happened (not the channel's volume) and stops blinking
-    // once the trigger activity has decayed away.
-    let indicator_center = pos2(
-        card_rect.right() - 3.0 - INDICATOR_ZONE_WIDTH / 2.0,
-        (fader_top + inner.bottom()) / 2.0,
-    );
-    let trigger = f32::from_bits(state.triggers[index].load(Ordering::Relaxed));
+/// Builds a single channel strip matching the mockup layout.
+pub fn draw_strip<'a>(state: &'a MyGui, channel: usize) -> Container<'a, Message> {
+    let params = &state.editor_state.params;
+    let trigger = f32::from_bits(state.editor_state.triggers[channel].load(Ordering::Relaxed));
     let lit = trigger > 0.01;
-    let blink_on = lit && {
-        let now = ui.input(|input| input.time);
-        (now * 5.0).fract() < 0.5
-    };
-    if blink_on {
-        ui.painter()
-            .circle_filled(indicator_center, 11.0, trigger_glow());
-        ui.painter()
-            .circle_filled(indicator_center, 7.0, TRIGGER_ACTIVE);
-    } else {
-        ui.painter()
-            .circle_filled(indicator_center, 7.0, TRIGGER_DIM);
+    // The trigger indicator blinks with an 80 ms on / 80 ms off phase while a
+    // note has recently triggered the channel.
+    let blink_on = lit && state.tick % 4 < 2;
+
+    let mut strip = column![
+        container(
+            text(channel_indicator_label(state, channel))
+                .size(12)
+                .color(TEXT)
+        )
+        .width(Length::Fill)
+        .padding(Padding::from(4))
+        .align_x(iced::alignment::Horizontal::Center),
+        row![
+            toggle_button(
+                "S",
+                params.channels[channel].solo.value(),
+                SOLO_ACTIVE,
+                Message::ToggleSolo(channel),
+            ),
+            toggle_button(
+                "M",
+                params.channels[channel].mute.value(),
+                MUTE_ACTIVE,
+                Message::ToggleMute(channel),
+            ),
+        ]
+        .spacing(6)
+        .width(Length::Fill),
+        iced::widget::rule::horizontal(1),
+    ]
+    .spacing(8);
+
+    // Pan has no effect in the multi plugin, so its knob (and the L/R labels)
+    // are hidden there; the fader fills the freed space.
+    if state.editor_state.show_pan {
+        strip = strip.push(show_knob(state, channel));
     }
-    ui.painter()
-        .circle_stroke(indicator_center, 7.0, Stroke::new(1.0, CARD_BORDER));
+
+    let fader = column![
+        text(fader_readout(&params.channels[channel].fader))
+            .size(8)
+            .color(TEXT),
+        show_fader(state, channel),
+    ]
+    .spacing(4)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    let trigger_indicator = canvas::Canvas::new(TriggerIndicator::new(blink_on))
+        .width(Length::Fixed(26.0))
+        .height(Length::Fill);
+
+    strip = strip.push(
+        row![fader, trigger_indicator]
+            .spacing(4)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    );
+
+    container(strip)
+        .width(STRIP_WIDTH)
+        .height(STRIP_HEIGHT)
+        .padding(8)
+        .style(strip_style)
 }
 
-/// A small rounded toggle button drawn manually.
-#[allow(clippy::too_many_arguments)]
-fn rounded_toggle(
-    ui: &mut Ui,
-    rect: Rect,
-    channel: usize,
-    kind: &str,
+/// A small rounded toggle button for solo/mute.
+fn toggle_button<'a>(
+    label: &'a str,
     active: bool,
-    label: &str,
-    active_color: Color32,
-) -> egui::Response {
-    let response = ui.interact(
-        rect,
-        ui.id().with(("dizmo-toggle", channel, kind)),
-        Sense::click(),
-    );
-    let bg = if active { active_color } else { FIELD_BG };
-    let border = if active { active_color } else { FIELD_BORDER };
-    ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter()
-        .rect_stroke(rect, 4.0, Stroke::new(1.0, border), StrokeKind::Inside);
-    let color = if active { Color32::WHITE } else { TEXT };
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(10.0),
-        color,
-    );
-    response
-}
-
-fn toggle_bool(setter: &ParamSetter, param: &BoolParam) {
-    setter.begin_set_parameter(param);
-    setter.set_parameter(param, !param.value());
-    setter.end_set_parameter(param);
+    active_color: Color,
+    message: Message,
+) -> Button<'a, Message> {
+    let text_color = if active { Color::WHITE } else { TEXT };
+    button(text(label).size(10).color(text_color))
+        .on_press(message)
+        .width(Length::Fill)
+        .style(move |_theme, status| {
+            let (background, border) = if active {
+                (active_color, active_color)
+            } else if status == button::Status::Hovered {
+                (FIELD_HOVER, ACCENT)
+            } else {
+                (FIELD_BG, FIELD_BORDER)
+            };
+            iced::widget::button::Style {
+                background: Some(Background::Color(background)),
+                text_color,
+                border: Border {
+                    color: border,
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                ..Default::default()
+            }
+        })
 }
 
 /// The label shown in the channel indicator: the kit's channel name from its
 /// `<channels>` section when a kit is loaded, otherwise the plain channel
 /// number.
-fn channel_indicator_label(state: &EditorState, index: usize) -> String {
+fn channel_indicator_label(state: &MyGui, index: usize) -> String {
     match &state.load_status {
         LoadStatus::Loaded { channels, .. } => channels
             .get(index)
@@ -217,5 +138,60 @@ fn channel_indicator_label(state: &EditorState, index: usize) -> String {
             .cloned()
             .unwrap_or_else(|| format!("{}", index + 1)),
         _ => format!("{}", index + 1),
+    }
+}
+
+fn strip_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let _ = theme;
+    iced::widget::container::Style {
+        background: Some(Background::Color(CARD_BG)),
+        border: Border {
+            color: CARD_BORDER,
+            width: 1.0,
+            radius: Radius::from(8.0),
+        },
+        ..Default::default()
+    }
+}
+
+/// Draws the trigger indicator circle: a bright amber disc that blinks while
+/// lit, and a dark warm gray rest when the channel is silent.
+struct TriggerIndicator {
+    lit: bool,
+}
+
+impl TriggerIndicator {
+    fn new(lit: bool) -> Self {
+        Self { lit }
+    }
+}
+
+impl<Message> Program<Message> for TriggerIndicator {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        if self.lit {
+            frame.fill(
+                &Path::circle(center, 11.0),
+                Color::from_rgba8(0xff, 0xd9, 0x6b, 0.43),
+            );
+            frame.fill(&Path::circle(center, 7.0), TRIGGER_ACTIVE);
+        } else {
+            frame.fill(&Path::circle(center, 7.0), TRIGGER_DIM);
+        }
+        frame.stroke(
+            &Path::circle(center, 7.0),
+            Stroke::default().with_color(CARD_BORDER).with_width(1.0),
+        );
+        vec![frame.into_geometry()]
     }
 }

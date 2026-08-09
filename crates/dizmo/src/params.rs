@@ -1,5 +1,5 @@
 use nice_plug::prelude::*;
-use nice_plug_egui::EguiState;
+use nice_plug_iced::WindowState;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -20,8 +20,8 @@ pub static AUX_OUTPUT_NAMES: [&str; NUM_CHANNELS] = [
 pub struct DizmoParams {
     /// The editor state, saved together with the parameter state so the window size can be
     /// restored.
-    #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
+    #[persist = "window-state"]
+    pub editor_state: Arc<WindowState>,
 
     /// One set of parameters per channel strip.
     #[nested(array)]
