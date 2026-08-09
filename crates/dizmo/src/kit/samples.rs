@@ -84,7 +84,10 @@ struct SampleTask {
 ///
 /// Returns the first error encountered (missing file, malformed WAV, or a
 /// `filechannel` outside the file's channel count).
-pub fn load_samples(kit: &DizmoKit, target_sample_rate: Option<u32>) -> Result<SampleBank, SampleError> {
+pub fn load_samples(
+    kit: &DizmoKit,
+    target_sample_rate: Option<u32>,
+) -> Result<SampleBank, SampleError> {
     load_samples_with_progress(kit, target_sample_rate, &mut |_, _| {})
 }
 

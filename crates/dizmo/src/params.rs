@@ -46,21 +46,22 @@ pub struct ChannelParams {
     pub solo: BoolParam,
 }
 
+/// The fader range: 0 dB center, -18 dB .. +6 dB, skewed towards 0 dB.
+pub(crate) fn fader_range() -> FloatRange {
+    FloatRange::SymmetricalSkewed {
+        min: util::db_to_gain(-18.0),
+        max: util::db_to_gain(6.0),
+        factor: FloatRange::gain_skew_factor(-18.0, 6.0),
+        center: util::db_to_gain(0.0),
+    }
+}
+
 fn fader_param(name: &str) -> FloatParam {
-    FloatParam::new(
-        name,
-        util::db_to_gain(0.0),
-        FloatRange::SymmetricalSkewed {
-            min: util::db_to_gain(-18.0),
-            max: util::db_to_gain(6.0),
-            factor: FloatRange::gain_skew_factor(-18.0, 6.0),
-            center: util::db_to_gain(0.0),
-        },
-    )
-    .with_smoother(SmoothingStyle::Logarithmic(50.0))
-    .with_unit(" dB")
-    .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
-    .with_string_to_value(formatters::s2v_f32_gain_to_db())
+    FloatParam::new(name, util::db_to_gain(0.0), fader_range())
+        .with_smoother(SmoothingStyle::Logarithmic(50.0))
+        .with_unit(" dB")
+        .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
+        .with_string_to_value(formatters::s2v_f32_gain_to_db())
 }
 
 fn pan_param(name: &str) -> FloatParam {
