@@ -27,6 +27,7 @@ use iced_futures::backend::default::time::every;
 pub mod browser;
 pub mod channel_strip;
 pub mod fader;
+pub mod gesture_drag;
 pub mod knob;
 
 // --- Mockup palette ---------------------------------------------------------

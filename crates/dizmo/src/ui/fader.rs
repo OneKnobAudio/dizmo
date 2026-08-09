@@ -3,6 +3,7 @@
 //! signal LED shown as a small dot above the track.
 
 use crate::params::fader_range;
+use crate::ui::gesture_drag::GestureDrag;
 use crate::ui::{ACCENT, Message};
 use iced::widget::{Column, column, container, space::Space};
 use iced::{Background, Border, Color, Element, Length, core::border::Radius};
@@ -48,13 +49,20 @@ pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<
         drag_scalar: 0.0025,
         ..Default::default()
     };
-    let slider = VSlider::new(NormalParam::from_nice(fader))
+    let normal_param = NormalParam::from_nice(fader);
+    let slider = VSlider::new(normal_param)
         .config(&config)
         .width(Length::Fill)
         .height(Length::Fill)
         .tick_marks(tick_group())
-        .style(FaderStyle)
-        .on_gesture(move |gesture| Message::FaderGesture(channel, gesture));
+        .style(FaderStyle);
+
+    let slider = GestureDrag::new(slider, move |gesture| {
+        Message::FaderGesture(channel, gesture)
+    })
+    .value(normal_param.normal.as_f32())
+    .default(normal_param.default.as_f32())
+    .drag_scalar(config.drag_scalar);
 
     column![
         signal_led(level),
@@ -122,8 +130,8 @@ impl StyleSheet for FaderStyle {
                 },
             },
             placement: Placement::LeftOrTop {
-                offset: Offset::new(-6.0, 0.0),
-                inside: false,
+                offset: Offset::default(),
+                inside: true,
             },
         })
     }

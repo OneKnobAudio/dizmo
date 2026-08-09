@@ -1,5 +1,6 @@
 //! The pan knob, built on the iced_audio `Knob`.
 
+use crate::ui::gesture_drag::GestureDrag;
 use crate::ui::{Message, TEXT_DIM};
 use iced::widget::{Column, column, container, row, text};
 use iced::{Alignment, Length};
@@ -13,10 +14,14 @@ pub const KNOB_RADIUS: f32 = 16.0;
 /// (stereo plugin only).
 pub fn show_knob<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'a, Message> {
     let pan = &state.editor_state.params.channels[channel].pan;
-    let knob = Knob::new(NormalParam::from_nice(pan))
+    let normal_param = NormalParam::from_nice(pan);
+    let knob = Knob::new(normal_param)
         .size(Length::Fixed(KNOB_RADIUS * 2.0))
-        .bipolar_center(Normal::new(0.5))
-        .on_gesture(move |gesture| Message::PanGesture(channel, gesture));
+        .bipolar_center(Normal::new(0.5));
+
+    let knob = GestureDrag::new(knob, move |gesture| Message::PanGesture(channel, gesture))
+        .value(normal_param.normal.as_f32())
+        .default(normal_param.default.as_f32());
 
     let readout = crate::params::v2s_f32_pan()(pan.value());
 
