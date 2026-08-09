@@ -11,7 +11,10 @@
 //! `cursor.position()`, so the press anchor and every move delta live in the
 //! same space as the widget's layout bounds. The wrapped widget keeps its
 //! drawing (and hover/gesture visuals) but its own `on_gesture` is left unset
-//! so it stays silent.
+//! so it stays silent. Events are forwarded to it only when that cannot
+//! corrupt what it renders from: moves and wheel are kept away from it during
+//! a drag, because its own drag math mixes `cursor.position()` with the raw
+//! event position and would clamp its local value to an extreme.
 
 use nice_plug_iced::iced::core::keyboard;
 use nice_plug_iced::iced::core::layout;
@@ -199,18 +202,18 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        self.update_gesture(tree, event, layout, cursor, shell);
-
-        self.content.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            viewport,
-        );
+        if self.update_gesture(tree, event, layout, cursor, shell) {
+            self.content.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            );
+        }
     }
 
     fn mouse_interaction(
@@ -289,7 +292,8 @@ where
     Renderer: 'a + renderer::Renderer,
     F: FnMut(Gesture) -> Message + 'a,
 {
-    /// Drives the gesture state from mouse/touch events.
+    /// Drives the gesture state from mouse/touch events, returning whether the
+    /// event should be forwarded to the wrapped widget.
     ///
     /// The press anchor and every move delta come from `cursor.position()`,
     /// never from the raw event position, because iced_baseview reports those
@@ -301,7 +305,7 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         shell: &mut Shell<'_, Message>,
-    ) {
+    ) -> bool {
         let state = tree.state.downcast_mut::<DragState>();
 
         // Re-sync with the parameter when it changed outside of a drag.
@@ -366,7 +370,6 @@ where
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-            | Event::Mouse(mouse::Event::CursorLeft)
             | Event::Touch(touch::Event::FingerLifted { .. })
             | Event::Touch(touch::Event::FingerLost { .. }) => {
                 self.end_gesture(state, shell);
@@ -384,6 +387,19 @@ where
 
         if capture {
             shell.capture_event();
+        }
+
+        // The wrapped widget renders from its own local parameter, which its
+        // drag math updates from a mix of `cursor.position()` and raw event
+        // positions. Those live in different coordinate spaces, so during a
+        // drag we must keep moves away from it; wheel is handled above and is
+        // never forwarded either. Everything else stays forwarded so the
+        // wrapped widget keeps its press/release/gesturing visuals in sync.
+        match event {
+            Event::Mouse(mouse::Event::CursorMoved { .. })
+            | Event::Touch(touch::Event::FingerMoved { .. }) => !state.is_dragging,
+            Event::Mouse(mouse::Event::WheelScrolled { .. }) => false,
+            _ => true,
         }
     }
 
