@@ -1,19 +1,16 @@
 //! A single channel strip: indicator label, solo/mute, pan knob, fader and
-//! trigger indicator, matching the mockup layout.
+//! peak meter, matching the mockup layout.
 
 use crate::ui::fader::{fader_readout, show_fader};
 use crate::ui::knob::show_knob;
+use crate::ui::peak_meter::{PeakMeter, peak_readout};
 use crate::ui::{
     ACCENT, CARD_BG, CARD_BORDER, DizmoGui, FIELD_BG, FIELD_BORDER, FIELD_HOVER, LoadStatus,
-    MUTE_ACTIVE, Message, SOLO_ACTIVE, TEXT, TRIGGER_ACTIVE, TRIGGER_DIM,
+    MUTE_ACTIVE, Message, SOLO_ACTIVE, TEXT,
 };
 use iced::core::border::Radius;
-use iced::widget::{
-    Button, Container, button, canvas,
-    canvas::{Frame, Path, Program, Stroke},
-    column, container, row, text,
-};
-use iced::{Background, Border, Color, Length, Padding, Point};
+use iced::widget::{Button, Container, button, canvas, column, container, row, text};
+use iced::{Background, Border, Color, Length, Padding};
 use nice_plug_iced::iced;
 use std::sync::atomic::Ordering;
 
@@ -26,11 +23,11 @@ pub const STRIP_HEIGHT: f32 = 460.0;
 /// Builds a single channel strip matching the mockup layout.
 pub fn draw_strip<'a>(state: &'a DizmoGui, channel: usize) -> Container<'a, Message> {
     let params = &state.editor_state.params;
-    let trigger = f32::from_bits(state.editor_state.triggers[channel].load(Ordering::Relaxed));
-    let lit = trigger > 0.01;
-    // The trigger indicator blinks with an 80 ms on / 80 ms off phase while a
-    // note has recently triggered the channel.
-    let blink_on = lit && state.tick % 4 < 2;
+    // The meter lights from the audio thread's post-fader block peak (the
+    // channel's level after its fader, mute, and solo), with the peak-hold cap
+    // decaying on the UI ticker.
+    let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
+    let hold = state.peak_hold[channel];
 
     let mut strip = column![
         container(
@@ -71,18 +68,21 @@ pub fn draw_strip<'a>(state: &'a DizmoGui, channel: usize) -> Container<'a, Mess
         text(fader_readout(&params.channels[channel].fader))
             .size(8)
             .color(TEXT),
+        text(format!("PK {}", peak_readout(hold)))
+            .size(8)
+            .color(TEXT),
         show_fader(state, channel),
     ]
     .spacing(4)
     .width(Length::Fill)
     .height(Length::Fill);
 
-    let trigger_indicator = canvas::Canvas::new(TriggerIndicator::new(blink_on))
+    let meter = canvas::Canvas::new(PeakMeter::new(level, hold))
         .width(Length::Fixed(26.0))
         .height(Length::Fill);
 
     strip = strip.push(
-        row![fader, trigger_indicator]
+        row![fader, meter]
             .spacing(4)
             .width(Length::Fill)
             .height(Length::Fill),
@@ -151,47 +151,5 @@ fn strip_style(theme: &iced::Theme) -> iced::widget::container::Style {
             radius: Radius::from(8.0),
         },
         ..Default::default()
-    }
-}
-
-/// Draws the trigger indicator circle: a bright amber disc that blinks while
-/// lit, and a dark warm gray rest when the channel is silent.
-struct TriggerIndicator {
-    lit: bool,
-}
-
-impl TriggerIndicator {
-    fn new(lit: bool) -> Self {
-        Self { lit }
-    }
-}
-
-impl<Message> Program<Message> for TriggerIndicator {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &iced::Renderer,
-        _theme: &iced::Theme,
-        bounds: iced::Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> Vec<canvas::Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
-        if self.lit {
-            frame.fill(
-                &Path::circle(center, 11.0),
-                Color::from_rgba8(0xff, 0xd9, 0x6b, 0.43),
-            );
-            frame.fill(&Path::circle(center, 7.0), TRIGGER_ACTIVE);
-        } else {
-            frame.fill(&Path::circle(center, 7.0), TRIGGER_DIM);
-        }
-        frame.stroke(
-            &Path::circle(center, 7.0),
-            Stroke::default().with_color(CARD_BORDER).with_width(1.0),
-        );
-        vec![frame.into_geometry()]
     }
 }

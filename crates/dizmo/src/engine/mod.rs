@@ -48,10 +48,6 @@ pub struct Engine {
     instrument_index: HashMap<String, usize>,
     /// Per instrument: sample indices sorted by ascending power (v2 ordering).
     sample_order: Vec<Vec<usize>>,
-    /// Bitmask of kit-channel outputs triggered since the last
-    /// [`Engine::take_triggered`], read by the plugin to light the editor's
-    /// channel trigger indicators.
-    triggered: u16,
     /// The current host sample rate, used for choke fade times.
     sample_rate: f32,
     voices: Vec<Voice>,
@@ -141,7 +137,6 @@ impl Engine {
             instrument_index,
             sample_order,
             voices: Vec::new(),
-            triggered: 0,
             rng: XorShift::new(),
         }
     }
@@ -289,15 +284,6 @@ impl Engine {
         self.voices.len()
     }
 
-    /// The kit-channel outputs that got a new voice since the last call, as a
-    /// bitmask, and clears them. Consumed by the plugin at the end of each
-    /// block to light the editor's per-channel trigger indicators.
-    pub fn take_triggered(&mut self) -> u16 {
-        let triggered = self.triggered;
-        self.triggered = 0;
-        triggered
-    }
-
     fn trigger(&mut self, instrument_index: usize, velocity: f32) {
         let Some(sample_index) = self.select_sample(instrument_index, velocity) else {
             return;
@@ -314,12 +300,6 @@ impl Engine {
             let fade_frames = cut_fade_frames(self.sample_rate);
             if let Some(oldest) = self.voices.first_mut() {
                 begin_cut_fade(fade_frames, oldest);
-            }
-        }
-
-        for stream in &streams {
-            if stream.output < u16::BITS as usize {
-                self.triggered |= 1 << stream.output;
             }
         }
 

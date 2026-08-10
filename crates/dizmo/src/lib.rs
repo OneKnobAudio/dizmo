@@ -2,8 +2,8 @@ use nice_plug::prelude::*;
 use nice_plug_iced::iced::PollSubNotifier;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::engine::{Engine, InstrumentMapping};
 use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, ChannelParams, DizmoParams, NUM_CHANNELS};
@@ -18,7 +18,31 @@ pub enum LoadTask {
     LoadKit { path: PathBuf },
 }
 
+/// The currently loaded kit, shared with the editor so a reopened window can
+/// show the kit that is already loaded instead of relying on a one-shot
+/// channel message that the previous window already consumed.
+#[derive(Clone, Default)]
+pub(crate) struct KitInfo {
+    pub name: String,
+    pub channels: Vec<String>,
+    pub mappings: Vec<InstrumentMapping>,
+    /// Non-fatal loading problems (e.g. more channels than outputs).
+    pub warnings: Vec<String>,
+}
+
+impl KitInfo {
+    fn to_status(&self) -> KitStatus {
+        KitStatus::Loaded {
+            name: self.name.clone(),
+            channels: self.channels.clone(),
+            mappings: self.mappings.clone(),
+            warnings: self.warnings.clone(),
+        }
+    }
+}
+
 /// Load status messages sent from the loader thread to the editor GUI.
+#[derive(Debug)]
 pub(crate) enum KitStatus {
     /// The kit was loaded; carries its display name from drumkit.xml and the
     /// kit's channel names.
@@ -62,22 +86,26 @@ struct AudioCore {
     engine_rx: Option<crossbeam_channel::Receiver<Result<Engine, String>>>,
     /// Retired engines are sent here so they get dropped off the audio thread.
     old_engine_tx: Option<crossbeam_channel::Sender<Engine>>,
-    /// Receives load status messages; moved into the editor when it is created.
-    status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
-    /// Sends load status messages to the editor. A clone is also held by the
-    /// loader thread; this one lets the synchronous `load_kit` path (e.g. the
-    /// `DIZMO_KIT` environment variable during initialize) notify the editor
-    /// too, so the header and strips reflect a kit loaded outside the button.
-    status_tx: Option<crossbeam_channel::Sender<KitStatus>>,
+    /// The kit-status sender, re-pointed to a fresh channel every time the
+    /// editor opens. Load progress and results therefore reach whichever editor
+    /// is currently visible, and a reopened window is seeded with the current
+    /// kit; sends are dropped harmlessly while the editor is closed. The loader
+    /// thread sends through the mutex so it always targets the live editor.
+    status_tx: Arc<Mutex<Option<crossbeam_channel::Sender<KitStatus>>>>,
+    /// The most recently loaded kit. The editor seeds its header from here at
+    /// every boot, so a reopened window shows the kit that is already loaded;
+    /// the loader thread and the synchronous `load_kit` path keep it current.
+    kit_info: Arc<Mutex<Option<KitInfo>>>,
     /// The sample rate the loader thread resamples to; set in `initialize`.
     host_sample_rate: Arc<AtomicU32>,
     /// Per-channel linear peak levels (as `f32` bits), written here each block
-    /// on the audio thread and shared with the editor for its signal LEDs.
+    /// on the audio thread and shared with the editor for its peak meters.
     levels: Arc<[AtomicU32; NUM_CHANNELS]>,
-    /// Per-channel trigger activity (as `f32` bits): set to 1.0 when a note
-    /// routes a new voice to the channel, then decays each block. Shared with
-    /// the editor to animate its per-channel trigger indicators.
-    triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
+    /// The held raw per-channel peaks (as `f32` bits): the loudest sample seen
+    /// recently, decaying on a slow release. The fader gain is applied on top
+    /// each block, so the published level is post-fader while the underlying
+    /// peak still follows the sound without flickering.
+    held_peaks: [AtomicU32; NUM_CHANNELS],
     /// An atomic flag the audio thread sets when a note lights an indicator;
     /// the iced editor polls it before every draw and redraws when set.
     notifier: PollSubNotifier,
@@ -91,11 +119,11 @@ impl AudioCore {
             sample_rate: 44100.0,
             engine_rx: None,
             old_engine_tx: None,
-            status_rx: None,
-            status_tx: None,
+            status_tx: Arc::new(Mutex::new(None)),
+            kit_info: Arc::new(Mutex::new(None)),
             host_sample_rate: Arc::new(AtomicU32::new(0)),
             levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
-            triggers: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+            held_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
             notifier: PollSubNotifier::new(),
         }
     }
@@ -141,62 +169,65 @@ impl AudioCore {
                 .is_some_and(|buffer| buffer.len() >= frames)
     }
 
-    /// Updates the shared per-channel peak levels from the scratch buffers,
-    /// decaying the previous value so the LED falls off after the sound ends.
-    /// Realtime-safe: no allocation, no locks.
-    fn update_levels(&self, frames: usize) {
+    /// Updates the shared per-channel peak levels from the scratch buffers.
+    /// Each channel's raw peak is held on a slow release (so the meter follows
+    /// the sound without flickering), then scaled by the channel's post-fader
+    /// gain every block, so the published level is what the channel actually
+    /// contributes to the mix and fader, mute, and solo changes show up
+    /// immediately. Realtime-safe: no allocation, no locks.
+    fn update_levels(
+        &self,
+        frames: usize,
+        active_channels: usize,
+        channel_params: &[ChannelParams; NUM_CHANNELS],
+    ) {
         let dt = frames as f32 / self.sample_rate;
         let decay = (-dt / 0.25).exp();
+        let any_soloed = channel_params
+            .iter()
+            .take(active_channels)
+            .any(|param| param.solo.value());
         for (index, buffer) in self.scratch.iter().enumerate() {
             let peak = buffer[..frames]
                 .iter()
                 .fold(0.0f32, |max, sample| max.max(sample.abs()));
-            let level = &self.levels[index];
-            let prev = f32::from_bits(level.load(Ordering::Relaxed));
-            let next = peak.max(prev * decay);
-            level.store(next.to_bits(), Ordering::Relaxed);
-        }
-    }
+            let held = &self.held_peaks[index];
+            let prev = f32::from_bits(held.load(Ordering::Relaxed));
+            let held_peak = peak.max(prev * decay);
+            held.store(held_peak.to_bits(), Ordering::Relaxed);
 
-    /// Decays every per-channel trigger value so the editor's indicators fade
-    /// out after a hit.
-    fn decay_triggers(&self, frames: usize) {
-        let dt = frames as f32 / self.sample_rate;
-        let decay = (-dt / 0.3).exp();
-        for trigger in self.triggers.iter() {
-            let prev = f32::from_bits(trigger.load(Ordering::Relaxed));
-            trigger.store((prev * decay).to_bits(), Ordering::Relaxed);
+            let gain = if index < active_channels {
+                post_fader_gain(&channel_params[index], any_soloed)
+            } else {
+                0.0
+            };
+            self.levels[index].store((held_peak * gain).to_bits(), Ordering::Relaxed);
         }
-    }
-
-    /// Sets the channels in `mask` (kit-channel bitmask from the engine) to
-    /// full trigger brightness, waking the editor so the indicator lights on
-    /// the very next frame instead of waiting for mouse input.
-    fn mark_triggered(&mut self, mask: u16) {
-        if mask == 0 {
-            return;
-        }
-        for index in 0..NUM_CHANNELS {
-            if mask & (1 << index) != 0 {
-                self.triggers[index].store(1.0f32.to_bits(), Ordering::Relaxed);
-            }
-        }
-        // Realtime-safe: `notify` only sets an atomic flag that the editor
-        // polls before drawing.
-        self.notifier.notify();
     }
 
     /// Tells the editor that `engine` is the current kit, so the header and
     /// strips show its name and channel names even when it was loaded outside
-    /// the LOAD KIT button flow. No-op when no editor was ever wired up.
+    /// the LOAD KIT button flow. The kit is remembered in shared state for any
+    /// editor that boots later; the live window also gets a status message.
     fn notify_loaded(&self, engine: &Engine) {
-        if let Some(status_tx) = &self.status_tx {
-            let _ = status_tx.send(KitStatus::Loaded {
-                name: engine.kit_name().to_string(),
-                channels: engine.channel_names(),
-                mappings: engine.mappings(),
-                warnings: Vec::new(),
-            });
+        let info = KitInfo {
+            name: engine.kit_name().to_string(),
+            channels: engine.channel_names(),
+            mappings: engine.mappings(),
+            warnings: Vec::new(),
+        };
+        *self.kit_info.lock().expect("kit info mutex poisoned") = Some(info.clone());
+        self.send_status(info.to_status());
+    }
+
+    /// Sends a kit-status message to the currently open editor, if any. The
+    /// loader thread and the synchronous `load_kit` path both go through here
+    /// so they always reach the live editor; messages are dropped while the
+    /// editor is closed.
+    fn send_status(&self, status: KitStatus) {
+        let slot = self.status_tx.lock().expect("status tx mutex poisoned");
+        if let Some(tx) = slot.as_ref() {
+            let _ = tx.send(status);
         }
     }
 }
@@ -261,6 +292,18 @@ pub fn mixdown_to_stereo(
         left[sample] = left_sum;
         right[sample] = right_sum;
     }
+}
+
+/// The gain a channel's raw output passes through before it reaches the mix:
+/// the fader's linear gain, or 0 when the channel is muted or soloed out.
+/// Matches the audible-state logic in [`mixdown_to_stereo`] and the multi
+/// plugin's output pass, so the meters read the level the channel actually
+/// contributes.
+fn post_fader_gain(param: &ChannelParams, any_soloed: bool) -> f32 {
+    // Solo overrides mute; otherwise a muted channel, or any non-soloed
+    // channel while something else is soloed, is inaudible.
+    let audible = param.solo.value() || (!any_soloed && !param.mute.value());
+    if audible { param.fader.value() } else { 0.0 }
 }
 
 /// The stereo plugin: all channels are mixed down to the MAIN bus.
@@ -360,17 +403,26 @@ macro_rules! impl_dizmo_plugin {
                 let load_kit: Arc<dyn Fn(PathBuf) + Send + Sync> = Arc::new(move |path| {
                     async_executor.execute_background(LoadTask::LoadKit { path });
                 });
-                let status_rx = self.core.status_rx.take();
+                // Point the kit-status channel at this fresh editor window, so
+                // live load progress and results reach it. The current kit is
+                // seeded at boot from the shared `kit_info` instead, which is
+                // why a reopened window still shows what is loaded.
+                let (status_tx, status_rx) = crossbeam_channel::unbounded();
+                *self
+                    .core
+                    .status_tx
+                    .lock()
+                    .expect("status tx mutex poisoned") = Some(status_tx);
                 let levels = self.core.levels.clone();
-                let triggers = self.core.triggers.clone();
+                let kit_info = self.core.kit_info.clone();
                 let notifier = self.core.notifier.clone();
                 Some(Box::new(ui::DizmoEditor::new(
                     self.params.clone(),
                     $show_pan,
                     load_kit,
-                    status_rx,
+                    Some(status_rx),
                     levels,
-                    triggers,
+                    kit_info,
                     notifier,
                 )))
             }
@@ -378,11 +430,8 @@ macro_rules! impl_dizmo_plugin {
             fn task_executor(&mut self) -> TaskExecutor<Self> {
                 let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
                 let (old_engine_tx, old_engine_rx) = crossbeam_channel::unbounded();
-                let (status_tx, status_rx) = crossbeam_channel::unbounded();
                 self.core.engine_rx = Some(engine_rx);
                 self.core.old_engine_tx = Some(old_engine_tx);
-                self.core.status_rx = Some(status_rx);
-                self.core.status_tx = Some(status_tx.clone());
 
                 // A dedicated thread drops retired engines so deallocation never
                 // happens on the audio thread.
@@ -393,10 +442,13 @@ macro_rules! impl_dizmo_plugin {
                 });
 
                 let host_sample_rate = self.core.host_sample_rate.clone();
+                let status_tx = self.core.status_tx.clone();
+                let kit_info = self.core.kit_info.clone();
                 Box::new(move |task: LoadTask| {
                     let LoadTask::LoadKit { path } = task;
                     let engine_tx = engine_tx.clone();
                     let status_tx = status_tx.clone();
+                    let kit_info = kit_info.clone();
                     let host_sample_rate = host_sample_rate.clone();
                     std::thread::spawn(move || {
                         let rate = host_sample_rate.load(Ordering::Relaxed);
@@ -407,7 +459,10 @@ macro_rules! impl_dizmo_plugin {
                                 &path,
                                 (rate != 0).then_some(rate),
                                 &mut |loaded, total| {
-                                    let _ = status_tx.send(KitStatus::Progress { loaded, total });
+                                    let slot = status_tx.lock().expect("status tx mutex poisoned");
+                                    if let Some(tx) = slot.as_ref() {
+                                        let _ = tx.send(KitStatus::Progress { loaded, total });
+                                    }
                                 },
                             )
                         }));
@@ -418,29 +473,42 @@ macro_rules! impl_dizmo_plugin {
                                 } else {
                                     rate as f32
                                 });
-                                let name = engine.kit_name().to_string();
-                                eprintln!("[dizmo] kit '{name}' loaded in {:?}", start.elapsed());
-                                let channels = engine.channel_names();
-                                let mappings = engine.mappings();
-                                let _ = engine_tx.send(Ok(engine));
-                                let _ = status_tx.send(KitStatus::Loaded {
-                                    name,
-                                    channels,
-                                    mappings,
+                                let info = KitInfo {
+                                    name: engine.kit_name().to_string(),
+                                    channels: engine.channel_names(),
+                                    mappings: engine.mappings(),
                                     warnings,
-                                });
+                                };
+                                eprintln!(
+                                    "[dizmo] kit '{}' loaded in {:?}",
+                                    info.name,
+                                    start.elapsed()
+                                );
+                                let _ = engine_tx.send(Ok(engine));
+                                *kit_info.lock().expect("kit info mutex poisoned") =
+                                    Some(info.clone());
+                                let slot = status_tx.lock().expect("status tx mutex poisoned");
+                                if let Some(tx) = slot.as_ref() {
+                                    let _ = tx.send(info.to_status());
+                                }
                             }
                             Ok(Err(err)) => {
                                 let message = err.to_string();
                                 eprintln!("[dizmo] failed to load kit: {message}");
                                 let _ = engine_tx.send(Err(message.clone()));
-                                let _ = status_tx.send(KitStatus::Failed(message));
+                                let slot = status_tx.lock().expect("status tx mutex poisoned");
+                                if let Some(tx) = slot.as_ref() {
+                                    let _ = tx.send(KitStatus::Failed(message));
+                                }
                             }
                             Err(payload) => {
                                 let message = panic_message(&payload);
                                 eprintln!("[dizmo] kit loader thread panicked: {message}");
                                 let _ = engine_tx.send(Err(message.clone()));
-                                let _ = status_tx.send(KitStatus::Failed(message));
+                                let slot = status_tx.lock().expect("status tx mutex poisoned");
+                                if let Some(tx) = slot.as_ref() {
+                                    let _ = tx.send(KitStatus::Failed(message));
+                                }
                             }
                         }
                     });
@@ -529,7 +597,6 @@ impl DizmoPlugin {
         let frames = buffer.samples();
 
         self.core.check_engine_updates();
-        self.core.decay_triggers(frames);
 
         for channel_samples in buffer.iter_samples() {
             for sample in channel_samples {
@@ -583,21 +650,21 @@ impl DizmoPlugin {
             );
         }
 
+        let kit_channels = engine.kit_channels();
         let slices = buffer.as_slice();
         let (left_rest, right_rest) = slices.split_at_mut(1);
         let left = &mut *left_rest[0];
         let right = &mut *right_rest[0];
         mixdown_to_stereo(
             &self.core.scratch,
-            engine.kit_channels(),
+            kit_channels,
             frames,
             left,
             right,
             &self.params.channels,
         );
-        let triggered = engine.take_triggered();
-        self.core.update_levels(frames);
-        self.core.mark_triggered(triggered);
+        self.core
+            .update_levels(frames, kit_channels, &self.params.channels);
 
         ProcessStatus::Normal
     }
@@ -613,7 +680,6 @@ impl DizmoMultiPlugin {
         let frames = aux.outputs.first().map_or(0, |output| output.samples());
 
         self.core.check_engine_updates();
-        self.core.decay_triggers(frames);
 
         for output in aux.outputs.iter_mut() {
             for channel_samples in output.iter_samples() {
@@ -670,15 +736,16 @@ impl DizmoMultiPlugin {
         }
 
         // Determine if any channel is soloed
+        let kit_channels = engine.kit_channels();
         let any_soloed = self
             .params
             .channels
             .iter()
-            .take(engine.kit_channels())
+            .take(kit_channels)
             .any(|p| p.solo.value());
 
         for (index, output) in aux.outputs.iter_mut().enumerate() {
-            if index >= engine.kit_channels() {
+            if index >= kit_channels {
                 continue;
             }
             let source = &self.core.scratch[index][..frames];
@@ -710,9 +777,8 @@ impl DizmoMultiPlugin {
             }
         }
 
-        let triggered = engine.take_triggered();
-        self.core.update_levels(frames);
-        self.core.mark_triggered(triggered);
+        self.core
+            .update_levels(frames, kit_channels, &self.params.channels);
 
         ProcessStatus::Normal
     }
@@ -756,15 +822,13 @@ mod tests {
 </midimap>
 "#;
 
-    #[test]
-    fn loader_thread_loads_kit_asynchronously() {
-        let dir = std::env::temp_dir().join("dizmo-async-load");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    /// Writes a minimal loadable kit into `dir` and returns the directory.
+    fn write_test_kit(dir: &std::path::Path) -> &std::path::Path {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join("drumkit.xml"), DRUMKIT).unwrap();
         std::fs::write(dir.join("inst_kick.xml"), INST).unwrap();
         std::fs::write(dir.join("midimap.xml"), MIDIMAP).unwrap();
-
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 44100,
@@ -774,6 +838,13 @@ mod tests {
         let mut writer = hound::WavWriter::create(dir.join("kick.wav"), spec).unwrap();
         writer.write_sample(0i16).unwrap();
         writer.finalize().unwrap();
+        dir
+    }
+
+    #[test]
+    fn loader_thread_loads_kit_asynchronously() {
+        let dir_path = std::env::temp_dir().join("dizmo-async-load");
+        let dir = write_test_kit(&dir_path);
 
         let mut plugin = DizmoPlugin::default();
         plugin.core.host_sample_rate.store(48000, Ordering::Relaxed);
@@ -792,5 +863,155 @@ mod tests {
             .expect("kit should load");
         assert_eq!(engine.kit_name(), "Async Load Kit");
         assert_eq!(engine.kit_channels(), 1);
+
+        // The loader thread also records the kit for future editor boots.
+        let guard = plugin.core.kit_info.lock().unwrap();
+        let info = guard.as_ref().expect("kit recorded by loader thread");
+        assert_eq!(info.name, "Async Load Kit");
+    }
+
+    /// A reopened editor must be seeded with the current kit. The window is
+    /// booted fresh every time it opens, so the kit lives in shared
+    /// `kit_info` (read at boot) rather than a one-shot channel message, which
+    /// the previous window would already have consumed.
+    #[test]
+    fn reopened_editor_receives_current_kit_state() {
+        let dir_path = std::env::temp_dir().join("dizmo-editor-reopen");
+        let dir = write_test_kit(&dir_path);
+        let engine = engine::load_engine(dir.join("drumkit.xml"), None).expect("kit loads");
+
+        let core = AudioCore::new();
+
+        // Loaded before any editor window exists: the kit is remembered in
+        // shared state for the next window to read at boot.
+        core.notify_loaded(&engine);
+        let guard = core.kit_info.lock().unwrap();
+        let seeded = guard.as_ref().expect("kit remembered");
+        assert_eq!(seeded.name, "Async Load Kit");
+        assert_eq!(seeded.channels, vec!["Kick".to_string()]);
+        drop(guard);
+
+        // A live window also receives the status message on its channel.
+        let (tx1, rx1) = crossbeam_channel::unbounded();
+        *core.status_tx.lock().unwrap() = Some(tx1);
+        core.notify_loaded(&engine);
+        match rx1.try_recv() {
+            Ok(KitStatus::Loaded { name, channels, .. }) => {
+                assert_eq!(name, "Async Load Kit");
+                assert_eq!(channels, vec!["Kick".to_string()]);
+            }
+            other => panic!("expected a Loaded status, got {other:?}"),
+        }
+
+        // The window closes and reopens: boot reads `kit_info` again and still
+        // sees the kit, and the stale window's channel receives nothing more.
+        let guard = core.kit_info.lock().unwrap();
+        let seed_again = guard.as_ref().expect("kit remembered");
+        assert_eq!(seed_again.name, "Async Load Kit");
+        drop(guard);
+        assert!(rx1.try_recv().is_err());
+    }
+
+    /// Sets a channel param's plain value through the same host path the
+    /// wrapper uses (`set_parameter_normalized` on the param pointer).
+    fn set_plain(params: &DizmoParams, id: &str, plain: f32) {
+        use nice_plug::params::Params;
+        let (_, ptr, _) = params
+            .param_map()
+            .into_iter()
+            .find(|(pid, _, _)| pid == id)
+            .expect("param should exist");
+        unsafe {
+            ptr._internal_set_normalized_value(ptr.preview_normalized(plain));
+        }
+    }
+
+    #[test]
+    fn meter_peaks_are_post_fader() {
+        let params = DizmoParams::default();
+        let channels = &params.channels;
+
+        // A muted channel contributes nothing post-fader.
+        set_plain(&params, "mute_1", 1.0);
+        assert_eq!(post_fader_gain(&channels[0], false), 0.0);
+
+        // Solo-ing another channel silences the rest, mute or not.
+        set_plain(&params, "solo_2", 1.0);
+        assert_eq!(post_fader_gain(&channels[0], true), 0.0);
+        assert_eq!(post_fader_gain(&channels[1], true), 1.0);
+
+        // update_levels reports the fader-scaled level: with the fader at
+        // -6 dB, a 0.5 raw peak reads ~0.25. A 1-second block forces the
+        // 250 ms release to decay fully so the new level is reached.
+        let params = DizmoParams::default();
+        set_plain(&params, "fader_1", util::db_to_gain(-6.0));
+        let mut core = AudioCore::new();
+        core.set_block_size(44100);
+        core.sample_rate = 44100.0;
+        for buffer in &mut core.scratch {
+            buffer.fill(0.5);
+        }
+        core.update_levels(44100, 2, &params.channels);
+        let level = f32::from_bits(core.levels[0].load(Ordering::Relaxed));
+        assert!(
+            (level - 0.25).abs() < 1e-3,
+            "meter should follow the fader: {level}"
+        );
+    }
+
+    /// Lowering the fader (or muting) must drop the meter on that same block,
+    /// not over the 250 ms raw-peak release, while an unchanged gain keeps the
+    /// smooth non-flickering peak. Regression for the meter masking the fader.
+    #[test]
+    fn meter_falls_immediately_when_fader_lowered() {
+        let params = DizmoParams::default();
+        let min_gain = util::db_to_gain(-18.0);
+
+        let mut core = AudioCore::new();
+        // Short (10 ms) blocks so the old code's slow release was still
+        // holding the previous level instead of showing the new one.
+        core.set_block_size(441);
+        core.sample_rate = 44100.0;
+        for buffer in &mut core.scratch {
+            buffer.fill(0.5);
+        }
+
+        // Unity fader: a 0.5 peak reads 0.5.
+        set_plain(&params, "fader_1", 1.0);
+        core.update_levels(441, 2, &params.channels);
+        let level = f32::from_bits(core.levels[0].load(Ordering::Relaxed));
+        assert!(
+            (level - 0.5).abs() < 1e-3,
+            "unity fader should read 0.5: {level}"
+        );
+
+        // Dragging the fader to its -18 dB floor reads that level immediately;
+        // before, the meter kept showing the old 0.5 decaying over 250 ms.
+        set_plain(&params, "fader_1", min_gain);
+        core.update_levels(441, 2, &params.channels);
+        let level = f32::from_bits(core.levels[0].load(Ordering::Relaxed));
+        let expected = 0.5 * min_gain;
+        assert!(
+            (level - expected).abs() < 1e-3,
+            "fader at -18 dB should read {expected}, got {level}"
+        );
+
+        // Muting reads exactly zero at once, even though the input is loud.
+        set_plain(&params, "mute_1", 1.0);
+        core.update_levels(441, 2, &params.channels);
+        let level = f32::from_bits(core.levels[0].load(Ordering::Relaxed));
+        assert!(
+            level < 1e-5,
+            "muted channel should read 0 at once, got {level}"
+        );
+
+        // Unmuting with a live peak snaps the meter back up right away.
+        set_plain(&params, "mute_1", 0.0);
+        core.update_levels(441, 2, &params.channels);
+        let level = f32::from_bits(core.levels[0].load(Ordering::Relaxed));
+        assert!(
+            (level - expected).abs() < 1e-3,
+            "unmuted meter should snap back to {expected}: {level}"
+        );
     }
 }

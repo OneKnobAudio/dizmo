@@ -1,7 +1,7 @@
 //! The iced-based editor for DIZMO, matching `assets/MOCKUP.svg`.
 
-use crate::KitStatus;
 use crate::params::{DizmoParams, NUM_CHANNELS};
+use crate::{KitInfo, KitStatus};
 use iced_audio::Gesture;
 use nice_plug::editor::dpi::{LogicalSize, PhysicalSize, Size};
 use nice_plug::prelude::*;
@@ -18,8 +18,8 @@ use nice_plug_iced::{
 };
 use std::any::Any;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced_futures::backend::default::time::every;
@@ -29,6 +29,7 @@ pub mod channel_strip;
 pub mod fader;
 pub mod gesture_drag;
 pub mod knob;
+pub mod peak_meter;
 
 // --- Mockup palette ---------------------------------------------------------
 
@@ -47,12 +48,14 @@ pub(crate) const ACCENT: Color = Color::from_rgb8(0x55, 0x84, 0xc8);
 pub(crate) const INDICATOR: Color = Color::from_rgb8(0xe8, 0xec, 0xf1);
 pub(crate) const SOLO_ACTIVE: Color = Color::from_rgb8(0x9a, 0x8a, 0x3c);
 pub(crate) const MUTE_ACTIVE: Color = Color::from_rgb8(0xb0, 0x4a, 0x46);
-/// The trigger indicator circle: a note hit lights the channel regardless of
-/// its volume. Bright amber, distinct from the blue fader fill.
-pub(crate) const TRIGGER_ACTIVE: Color = Color::from_rgb8(0xff, 0xd9, 0x6b);
-/// The trigger indicator's resting fill: a dark warm gray that stays visible
-/// against the card background while the channel is silent.
-pub(crate) const TRIGGER_DIM: Color = Color::from_rgb8(0x2e, 0x2a, 0x22);
+/// The peak meter ladder: green below -12 dB, yellow up to -6 dB, red above.
+pub(crate) const METER_GREEN: Color = Color::from_rgb8(0x3f, 0xc2, 0x63);
+pub(crate) const METER_YELLOW: Color = Color::from_rgb8(0xea, 0xc0, 0x3c);
+pub(crate) const METER_RED: Color = Color::from_rgb8(0xd9, 0x54, 0x4f);
+/// The resting fill of an unlit meter segment, visible against the card.
+pub(crate) const METER_OFF: Color = Color::from_rgb8(0x2a, 0x2d, 0x33);
+/// The peak-hold cap drawn on top of the lit meter segments.
+pub(crate) const PEAK_HOLD_COLOR: Color = Color::from_rgb8(0xf2, 0xf4, 0xf7);
 
 /// The header bar height in the mockup.
 const HEADER_HEIGHT: f32 = 42.0;
@@ -60,8 +63,14 @@ const HEADER_HEIGHT: f32 = 42.0;
 /// The default editor window size in logical pixels.
 const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(1240.0, 560.0);
 
-/// How often the ticker fires, driving the trigger blink and LED animations.
+/// How often the ticker fires, driving the meter and LED animations.
 const TICK_INTERVAL: Duration = Duration::from_millis(40);
+
+/// How long the per-channel peak-hold cap takes to fall after the signal
+/// drops, so the meter's cap lingers briefly on each hit. Kept short so a
+/// fader / mute / solo change is visibly reflected in the peak almost at once,
+/// rather than the cap sitting on the old post-fader level for a full second.
+const PEAK_HOLD_RELEASE: Duration = Duration::from_millis(250);
 
 /// Persistent editor state used to restore the window size.
 pub fn default_editor_state() -> Arc<WindowState> {
@@ -79,13 +88,13 @@ pub struct EditorState {
     pub load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
     /// Receives load results from the loader thread, polled each frame.
     pub status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    /// The most recently loaded kit, shared with the plugin. The editor seeds
+    /// its header from here at boot, so a reopened window shows the kit that
+    /// is already loaded.
+    pub kit_info: Arc<Mutex<Option<KitInfo>>>,
     /// Per-channel linear peak levels (as `f32` bits), written by the audio
-    /// thread each block and read by the strips to light their signal LEDs.
+    /// thread each block and read by the strips to light their peak meters.
     pub levels: Arc<[AtomicU32; NUM_CHANNELS]>,
-    /// Per-channel trigger activity (as `f32` bits): set to 1.0 when a note
-    /// triggers the channel, then decays; the strips animate their channel
-    /// indicator while this is lit.
-    pub triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
 }
 
 impl EditorState {
@@ -94,16 +103,16 @@ impl EditorState {
         show_pan: bool,
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+        kit_info: Arc<Mutex<Option<KitInfo>>>,
         levels: Arc<[AtomicU32; NUM_CHANNELS]>,
-        triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
     ) -> Self {
         Self {
             params,
             show_pan,
             load_kit,
             status_rx,
+            kit_info,
             levels,
-            triggers,
         }
     }
 }
@@ -131,7 +140,7 @@ pub enum LoadStatus {
 /// The messages handled by the editor program.
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
-    /// A tick from the 40 ms timer, driving the blink / LED animations.
+    /// A tick from the 40 ms timer, driving the meter and LED animations.
     Tick,
     /// The audio thread set a param or lit an indicator; poll for new state.
     Poll,
@@ -165,28 +174,43 @@ pub struct DizmoGui {
     pub show_warning: Option<String>,
     /// The in-window kit picker.
     pub browser: browser::Browser,
-    /// Monotonic tick counter for the blink animations.
-    pub tick: u64,
+    /// The peak-hold cap per channel (linear 0..1): the highest level seen
+    /// recently, decaying toward the live level each tick.
+    pub peak_hold: [f32; NUM_CHANNELS],
 }
 
 impl DizmoGui {
     fn new(editor_state: IcedEditorState<EditorState>, nice_ctx: NiceGuiContext) -> Self {
+        // Seed the header with whatever kit is already loaded, so reopening the
+        // window does not lose the current kit.
+        let load_status = match &*editor_state
+            .kit_info
+            .lock()
+            .expect("kit info mutex poisoned")
+        {
+            Some(info) => LoadStatus::Loaded {
+                name: info.name.clone(),
+                channels: info.channels.clone(),
+                mappings: info.mappings.clone(),
+            },
+            None => LoadStatus::Idle,
+        };
         Self {
             editor_state,
             nice_ctx,
-            load_status: LoadStatus::Idle,
+            load_status,
             show_mappings: false,
             show_error: None,
             show_warning: None,
             browser: browser::Browser::new(),
-            tick: 0,
+            peak_hold: [0.0; NUM_CHANNELS],
         }
     }
 
     fn update(&mut self, message: Message) {
         match message {
             Message::Tick => {
-                self.tick = self.tick.wrapping_add(1);
+                self.decay_peak_hold();
                 self.poll_status();
             }
             Message::Poll => self.poll_status(),
@@ -225,6 +249,16 @@ impl DizmoGui {
             Message::ToggleMappings => self.show_mappings = !self.show_mappings,
             Message::DismissError => self.show_error = None,
             Message::DismissWarning => self.show_warning = None,
+        }
+    }
+
+    /// Captures the current level per channel and decays the peak-hold cap
+    /// toward it, so the meter's cap lingers on a hit and then falls slowly.
+    fn decay_peak_hold(&mut self) {
+        let decay = (-TICK_INTERVAL.as_secs_f32() / PEAK_HOLD_RELEASE.as_secs_f32()).exp();
+        for (index, hold) in self.peak_hold.iter_mut().enumerate() {
+            let level = f32::from_bits(self.editor_state.levels[index].load(Ordering::Relaxed));
+            *hold = level.max(*hold * decay);
         }
     }
 
@@ -375,7 +409,7 @@ fn theme(_state: &DizmoGui) -> iced::Theme {
             background: BG,
             text: TEXT,
             primary: ACCENT,
-            success: TRIGGER_ACTIVE,
+            success: INDICATOR,
             warning: SOLO_ACTIVE,
             danger: MUTE_ACTIVE,
         },
@@ -395,12 +429,12 @@ impl DizmoEditor {
         load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
         status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
         levels: Arc<[AtomicU32; NUM_CHANNELS]>,
-        triggers: Arc<[AtomicU32; NUM_CHANNELS]>,
+        kit_info: Arc<Mutex<Option<KitInfo>>>,
         notifier: PollSubNotifier,
     ) -> Self {
         let window_state = params.editor_state.clone();
         let editor_state =
-            EditorState::new(params, show_pan, load_kit, status_rx, levels, triggers);
+            EditorState::new(params, show_pan, load_kit, status_rx, kit_info, levels);
 
         let inner = create_iced_editor(
             window_state,
@@ -444,7 +478,7 @@ impl Default for DizmoEditor {
             Arc::new(|_| {}),
             Some(rx),
             Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
-            Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+            Arc::new(Mutex::new(None)),
             PollSubNotifier::new(),
         )
     }
