@@ -102,24 +102,27 @@ impl Browser {
 }
 
 /// The full-window modal overlay: a dim backdrop plus a centered panel with a
-/// header row and a scrollable list of entries.
-pub fn view(browser: &Browser) -> iced::widget::Stack<'_, Message> {
-    let mut list = column![entry_row("..", true, Message::BrowserUp)].spacing(2);
+/// header row and a scrollable list of entries. `scale` is the uniform UI zoom.
+pub fn view(browser: &Browser, scale: f32) -> iced::widget::Stack<'_, Message> {
+    let s = scale;
+    let mut list =
+        column![entry_row("..", true, Message::BrowserUp, s)].spacing(2.0 * s);
     for (index, entry) in browser.entries().iter().enumerate() {
         list = list.push(entry_row(
             &entry.name,
             entry.is_dir,
             Message::BrowserEntry(index),
+            s,
         ));
     }
 
-    let list = scrollable(container(list).padding(4).width(Length::Fill))
+    let list = scrollable(container(list).padding(4.0 * s).width(Length::Fill))
         .id(browser.scroll_id().clone())
         .height(Length::Fill);
 
     let header = row![
         text(truncate(browser.cwd().display().to_string(), 56))
-            .size(11)
+            .size(11.0 * s)
             .color(TEXT_DIM),
         Space::new().width(Length::Fill),
         button("HOME")
@@ -131,13 +134,15 @@ pub fn view(browser: &Browser) -> iced::widget::Stack<'_, Message> {
             .style(nav_button),
     ]
     .align_y(Alignment::Center)
-    .spacing(8);
+    .spacing(8.0 * s);
 
-    let panel = container(column![header, iced::widget::rule::horizontal(1), list].spacing(8))
-        .width(560)
-        .height(400)
-        .padding(12)
-        .style(panel_style);
+    let panel = container(
+        column![header, iced::widget::rule::horizontal(1), list].spacing(8.0 * s),
+    )
+    .width(560.0 * s)
+    .height(400.0 * s)
+    .padding(12.0 * s)
+    .style(panel_style);
 
     let backdrop = mouse_area(container(
         Space::new().width(Length::Fill).height(Length::Fill),
@@ -160,11 +165,11 @@ pub fn view(browser: &Browser) -> iced::widget::Stack<'_, Message> {
 }
 
 /// A single selectable row in the browser list.
-fn entry_row<'a>(name: &'a str, is_dir: bool, on_press: Message) -> Button<'a, Message> {
+fn entry_row<'a>(name: &'a str, is_dir: bool, on_press: Message, s: f32) -> Button<'a, Message> {
     let icon = if is_dir { "▸ " } else { "  " };
     let color = if is_dir { TEXT } else { TEXT_DIM };
     let content = text(format!("{icon}{name}"))
-        .size(12)
+        .size(12.0 * s)
         .color(color)
         .width(Length::Fill);
     button(row![content].width(Length::Fill))

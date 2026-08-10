@@ -43,6 +43,7 @@ const TICKS_MINOR_DB: [f32; 4] = [-15.0, -9.0, -3.0, 3.0];
 /// Builds the fader block: a `VSlider` styled like a hardware mixer fader
 /// with a signal LED above the track.
 pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'a, Message> {
+    let s = state.scale();
     let fader = &state.editor_state.params.channels[channel].fader;
     let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
     let config = Config {
@@ -55,7 +56,7 @@ pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<
         .width(Length::Fill)
         .height(Length::Fill)
         .tick_marks(tick_group())
-        .style(FaderStyle);
+        .style(FaderStyle(s));
 
     let slider = GestureDrag::new(slider, move |gesture| {
         Message::FaderGesture(channel, gesture)
@@ -65,13 +66,13 @@ pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<
     .drag_scalar(config.drag_scalar);
 
     column![
-        signal_led(level),
+        signal_led(level, s),
         container(slider)
-            .width(Length::Fixed(24.0))
+            .width(Length::Fixed(24.0 * s))
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center),
     ]
-    .spacing(4)
+    .spacing(4.0 * s)
     .width(Length::Fill)
     .height(Length::Fill)
 }
@@ -92,34 +93,36 @@ fn tick_group() -> &'static tick_marks::Group {
 }
 
 /// A realistic hardware-style fader: a recessed track, a rounded cap handle,
-/// and dB tick marks along the left side.
-struct FaderStyle;
+/// and dB tick marks along the left side. Carries the UI zoom so the rail,
+/// handle, and tick marks scale with the window.
+struct FaderStyle(f32);
 
 impl StyleSheet for FaderStyle {
     type Style = iced::Theme;
 
     fn idle(&self, _theme: &iced::Theme) -> Appearance {
-        classic(HANDLE_BG, HANDLE_BORDER)
+        classic(self.0, HANDLE_BG, HANDLE_BORDER)
     }
 
     fn hovered(&self, _theme: &iced::Theme) -> Appearance {
-        classic(HANDLE_BG_HOVER, HANDLE_BORDER)
+        classic(self.0, HANDLE_BG_HOVER, HANDLE_BORDER)
     }
 
     fn gesturing(&self, _theme: &iced::Theme) -> Appearance {
-        classic(HANDLE_BG_DRAG, ACCENT)
+        classic(self.0, HANDLE_BG_DRAG, ACCENT)
     }
 
     fn tick_marks_appearance(&self, _theme: &iced::Theme) -> Option<TickMarksAppearance> {
+        let s = self.0;
         Some(TickMarksAppearance {
             style: TickAppearance {
                 tier_1: Shape::Line {
-                    length: 18.0,
+                    length: 18.0 * s,
                     width: 1.0,
                     color: TICK_MAJOR,
                 },
                 tier_2: Shape::Line {
-                    length: 11.0,
+                    length: 11.0 * s,
                     width: 1.0,
                     color: TICK_MINOR,
                 },
@@ -137,19 +140,19 @@ impl StyleSheet for FaderStyle {
     }
 }
 
-fn classic(handle_color: Color, border_color: Color) -> Appearance {
+fn classic(s: f32, handle_color: Color, border_color: Color) -> Appearance {
     Appearance::Classic(ClassicAppearance {
         rail: ClassicRail {
             rail_colors: (RAIL_HILIGHT, RAIL_SHADOW),
             rail_widths: (1.0, 1.0),
-            rail_padding: 18.0,
+            rail_padding: 18.0 * s,
         },
         handle: ClassicHandle {
             color: handle_color,
-            height: 22,
-            notch_width: 6.0,
+            height: (22.0 * s).round() as u16,
+            notch_width: 6.0 * s,
             notch_color: HANDLE_NOTCH,
-            border_radius: 4.0,
+            border_radius: 4.0 * s,
             border_width: 1.0,
             border_color,
         },
@@ -158,7 +161,7 @@ fn classic(handle_color: Color, border_color: Color) -> Appearance {
 
 /// A small round signal LED that lights green when the channel is receiving
 /// audio and dims back to grey once the level decays.
-fn signal_led(level: f32) -> Element<'static, Message> {
+fn signal_led(level: f32, s: f32) -> Element<'static, Message> {
     let color = if level >= LED_THRESHOLD {
         let intensity = (level * 3.0).clamp(0.0, 1.0);
         Color::from_rgb8(
@@ -170,13 +173,13 @@ fn signal_led(level: f32) -> Element<'static, Message> {
         Color::from_rgb8(40, 40, 40)
     };
 
-    container(Space::new().width(8.0).height(8.0))
-        .width(8.0)
-        .height(8.0)
+    container(Space::new().width(8.0 * s).height(8.0 * s))
+        .width(8.0 * s)
+        .height(8.0 * s)
         .style(move |_| container::Style {
             background: Some(Background::Color(color)),
             border: Border {
-                radius: Radius::from(4.0),
+                radius: Radius::from(4.0 * s),
                 ..Default::default()
             },
             ..Default::default()

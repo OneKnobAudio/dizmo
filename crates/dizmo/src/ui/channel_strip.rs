@@ -28,15 +28,16 @@ pub fn draw_strip<'a>(state: &'a DizmoGui, channel: usize) -> Container<'a, Mess
     // decaying on the UI ticker.
     let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
     let hold = state.peak_hold[channel];
+    let s = state.scale();
 
     let mut strip = column![
         container(
             text(channel_indicator_label(state, channel))
-                .size(12)
+                .size(12.0 * s)
                 .color(TEXT)
         )
         .width(Length::Fill)
-        .padding(Padding::from(4))
+        .padding(Padding::from(4.0 * s))
         .align_x(iced::alignment::Horizontal::Center),
         row![
             toggle_button(
@@ -44,19 +45,21 @@ pub fn draw_strip<'a>(state: &'a DizmoGui, channel: usize) -> Container<'a, Mess
                 params.channels[channel].solo.value(),
                 SOLO_ACTIVE,
                 Message::ToggleSolo(channel),
+                s,
             ),
             toggle_button(
                 "M",
                 params.channels[channel].mute.value(),
                 MUTE_ACTIVE,
                 Message::ToggleMute(channel),
+                s,
             ),
         ]
-        .spacing(6)
+        .spacing(6.0 * s)
         .width(Length::Fill),
-        iced::widget::rule::horizontal(1),
+        iced::widget::rule::horizontal(1.0 * s),
     ]
-    .spacing(8);
+    .spacing(8.0 * s);
 
     // Pan has no effect in the multi plugin, so its knob (and the L/R labels)
     // are hidden there; the fader fills the freed space.
@@ -66,32 +69,32 @@ pub fn draw_strip<'a>(state: &'a DizmoGui, channel: usize) -> Container<'a, Mess
 
     let fader = column![
         text(fader_readout(&params.channels[channel].fader))
-            .size(8)
+            .size(8.0 * s)
             .color(TEXT),
         text(format!("PK {}", peak_readout(hold)))
-            .size(8)
+            .size(8.0 * s)
             .color(TEXT),
         show_fader(state, channel),
     ]
-    .spacing(4)
+    .spacing(4.0 * s)
     .width(Length::Fill)
     .height(Length::Fill);
 
-    let meter = canvas::Canvas::new(PeakMeter::new(level, hold))
-        .width(Length::Fixed(26.0))
+    let meter = canvas::Canvas::new(PeakMeter::new(level, hold, s))
+        .width(Length::Fixed(26.0 * s))
         .height(Length::Fill);
 
     strip = strip.push(
         row![fader, meter]
-            .spacing(4)
+            .spacing(4.0 * s)
             .width(Length::Fill)
             .height(Length::Fill),
     );
 
     container(strip)
-        .width(STRIP_WIDTH)
-        .height(STRIP_HEIGHT)
-        .padding(8)
+        .width(STRIP_WIDTH * s)
+        .height(STRIP_HEIGHT * s)
+        .padding(8.0 * s)
         .style(strip_style)
 }
 
@@ -101,9 +104,10 @@ fn toggle_button<'a>(
     active: bool,
     active_color: Color,
     message: Message,
+    s: f32,
 ) -> Button<'a, Message> {
     let text_color = if active { Color::WHITE } else { TEXT };
-    button(text(label).size(10).color(text_color))
+    button(text(label).size(10.0 * s).color(text_color))
         .on_press(message)
         .width(Length::Fill)
         .style(move |_theme, status| {

@@ -13,10 +13,11 @@ pub const KNOB_RADIUS: f32 = 16.0;
 /// Builds the pan knob with the L/R labels and a percentage readout
 /// (stereo plugin only).
 pub fn show_knob<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'a, Message> {
+    let s = state.scale();
     let pan = &state.editor_state.params.channels[channel].pan;
     let normal_param = NormalParam::from_nice(pan);
     let knob = Knob::new(normal_param)
-        .size(Length::Fixed(KNOB_RADIUS * 2.0))
+        .size(Length::Fixed(KNOB_RADIUS * 2.0 * s))
         .bipolar_center(Normal::new(0.5));
 
     let knob = GestureDrag::new(knob, move |gesture| Message::PanGesture(channel, gesture))
@@ -27,21 +28,21 @@ pub fn show_knob<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'
 
     column![
         row![
-            text("L").size(9).color(TEXT_DIM),
+            text("L").size(9.0 * s).color(TEXT_DIM),
             container(knob)
                 .width(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center),
-            text("R").size(9).color(TEXT_DIM),
+            text("R").size(9.0 * s).color(TEXT_DIM),
         ]
         .align_y(Alignment::Center)
-        .spacing(8)
+        .spacing(8.0 * s)
         .width(Length::Fill),
         text(readout)
-            .size(8)
+            .size(8.0 * s)
             .color(TEXT_DIM)
             .width(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center),
     ]
-    .spacing(2)
+    .spacing(2.0 * s)
     .width(Length::Fill)
 }

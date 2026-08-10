@@ -142,6 +142,8 @@ pub enum LoadStatus {
 pub enum Message {
     /// A tick from the 40 ms timer, driving the meter and LED animations.
     Tick,
+    /// The host resized the editor view; carries the new logical size.
+    Resized(iced::Size),
     /// The audio thread set a param or lit an indicator; poll for new state.
     Poll,
     FaderGesture(usize, Gesture),
@@ -177,6 +179,9 @@ pub struct DizmoGui {
     /// The peak-hold cap per channel (linear 0..1): the highest level seen
     /// recently, decaying toward the live level each tick.
     pub peak_hold: [f32; NUM_CHANNELS],
+    /// The current logical window size, driven by host resize events. Used to
+    /// compute the uniform UI zoom; see [`DizmoGui::scale`].
+    pub ui_size: iced::Size,
 }
 
 impl DizmoGui {
@@ -204,6 +209,7 @@ impl DizmoGui {
             show_warning: None,
             browser: browser::Browser::new(),
             peak_hold: [0.0; NUM_CHANNELS],
+            ui_size: iced::Size::new(WINDOW_SIZE.width, WINDOW_SIZE.height),
         }
     }
 
@@ -213,6 +219,7 @@ impl DizmoGui {
                 self.decay_peak_hold();
                 self.poll_status();
             }
+            Message::Resized(size) => self.ui_size = size,
             Message::Poll => self.poll_status(),
             Message::FaderGesture(channel, gesture) => {
                 let param = &self.editor_state.params.channels[channel].fader;
@@ -295,13 +302,23 @@ impl DizmoGui {
         }
     }
 
+    /// The uniform zoom applied to the whole UI, anchored so the mockup is
+    /// pixel-identical at the default window size. A larger window zooms the
+    /// UI in; a wider window reveals more strips in the scrollable.
+    fn scale(&self) -> f32 {
+        (self.ui_size.width / WINDOW_SIZE.width)
+            .min(self.ui_size.height / WINDOW_SIZE.height)
+            .clamp(0.5, 2.0)
+    }
+
     fn view(&self) -> Element<'_, Message> {
-        let mut strips = iced::widget::row![].spacing(8);
+        let scale = self.scale();
+        let mut strips = iced::widget::row![].spacing(8.0 * scale);
         for index in 0..NUM_CHANNELS {
             strips = strips.push(channel_strip::draw_strip(self, index));
         }
 
-        let scroll = scrollable(container(strips).padding(6))
+        let scroll = scrollable(container(strips).padding(6.0 * scale))
             .direction(Direction::Both {
                 vertical: Scrollbar::new(),
                 horizontal: Scrollbar::new(),
@@ -317,7 +334,7 @@ impl DizmoGui {
         let base: Element<'_, Message> = base.into();
 
         if self.browser.is_open() {
-            return iced::widget::Stack::with_children([base, browser::view(&self.browser).into()])
+            return iced::widget::Stack::with_children([base, browser::view(&self.browser, scale).into()])
                 .into();
         }
         if self.show_mappings {
@@ -326,14 +343,15 @@ impl DizmoGui {
         if let Some(message) = &self.show_error {
             return iced::widget::Stack::with_children([
                 base,
-                modal_dialog("Error loading kit", message, Message::DismissError).into(),
+                modal_dialog("Error loading kit", message, Message::DismissError, scale).into(),
             ])
             .into();
         }
         if let Some(message) = &self.show_warning {
             return iced::widget::Stack::with_children([
                 base,
-                modal_dialog("Kit loaded with warnings", message, Message::DismissWarning).into(),
+                modal_dialog("Kit loaded with warnings", message, Message::DismissWarning, scale)
+                    .into(),
             ])
             .into();
         }
@@ -343,14 +361,15 @@ impl DizmoGui {
     /// The header bar: logo, section label, separator, Mappings button and the
     /// kit status / LOAD KIT button at the right end.
     fn header(&self) -> iced::widget::Container<'_, Message> {
+        let s = self.scale();
         let mut header_row = row![
-            text("DIZMO").size(16).color(TEXT),
-            text("CHANNELS").size(11).color(TEXT_DIM),
-            container(Space::new().width(6.0).height(28.0)).style(separator_style),
+            text("DIZMO").size(16.0 * s).color(TEXT),
+            text("CHANNELS").size(11.0 * s).color(TEXT_DIM),
+            container(Space::new().width(6.0 * s).height(28.0 * s)).style(separator_style),
         ]
         .align_y(Alignment::Center)
-        .spacing(16)
-        .padding([0, 20]);
+        .spacing(16.0 * s)
+        .padding([0.0, 20.0 * s]);
 
         header_row = header_row.push(self.mappings_button());
         header_row = header_row.push(Space::new().width(Length::Fill));
@@ -368,29 +387,31 @@ impl DizmoGui {
             LoadStatus::Loaded { name, .. } => (name.clone(), TEXT),
             LoadStatus::Failed(message) => (message.clone(), MUTE_ACTIVE),
         };
-        header_row = header_row.push(text(label).size(9).color(color));
+        header_row = header_row.push(text(label).size(9.0 * s).color(color));
         header_row = header_row.push(self.load_kit_button());
 
         container(header_row)
             .width(Length::Fill)
-            .height(HEADER_HEIGHT)
+            .height(HEADER_HEIGHT * s)
             .style(header_style)
     }
 
     /// The Mappings button that opens the MIDI map / channel assignment dialog.
     fn mappings_button(&self) -> Button<'_, Message> {
+        let s = self.scale();
         let active = self.show_mappings;
-        button(text("MAPPINGS").size(9).color(TEXT))
+        button(text("MAPPINGS").size(9.0 * s).color(TEXT))
             .on_press(Message::ToggleMappings)
-            .width(Length::Fixed(76.0))
+            .width(Length::Fixed(76.0 * s))
             .style(move |_theme, status| pill_button_style(active, status))
     }
 
     /// The LOAD KIT button at the right end of the header.
     fn load_kit_button(&self) -> Button<'_, Message> {
-        button(text("LOAD KIT").size(10).color(TEXT))
+        let s = self.scale();
+        button(text("LOAD KIT").size(10.0 * s).color(TEXT))
             .on_press(Message::OpenBrowser)
-            .width(Length::Fixed(92.0))
+            .width(Length::Fixed(92.0 * s))
             .style(load_kit_button_style)
     }
 }
@@ -458,6 +479,7 @@ impl DizmoEditor {
                     iced::Subscription::batch([
                         every(TICK_INTERVAL).map(|_| Message::Tick),
                         iced::poll_events().map(|()| Message::Poll),
+                        iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
                     ])
                 })
                 .run()
@@ -516,7 +538,13 @@ impl Editor for DizmoEditor {
     }
 
     fn set_size(&self, physical_size: PhysicalSize<u32>) -> bool {
-        self.inner.set_size(physical_size)
+        // The host has resized the plugin view (or accepted an earlier resize
+        // request). The baseview view follows the host's frame automatically
+        // and the UI re-layouts via the `Resized` event, so we only need to
+        // accept the size rather than reject it (which would make the host
+        // revert the resize).
+        let _ = physical_size;
+        true
     }
 
     fn set_scale_factor(&self, factor: f64) -> bool {
@@ -524,7 +552,14 @@ impl Editor for DizmoEditor {
     }
 
     fn resize_hint(&self) -> ResizeHint {
-        self.inner.resize_hint()
+        // Advertise free host resizing: this drives VST3's `canResize` and
+        // CLAP's `gui.can_resize` / `gui.get_resize_hints`.
+        ResizeHint {
+            can_resize: true,
+            can_resize_horizontally: true,
+            can_resize_vertically: true,
+            ..Default::default()
+        }
     }
 }
 
@@ -650,24 +685,25 @@ fn modal_dialog<'a>(
     title: &'a str,
     message: &'a str,
     dismiss: Message,
+    s: f32,
 ) -> iced::widget::Stack<'a, Message> {
     let panel = container(
         column![
-            text(title).size(14).color(TEXT),
-            iced::widget::rule::horizontal(1),
+            text(title).size(14.0 * s).color(TEXT),
+            iced::widget::rule::horizontal(1.0 * s),
             text(message)
-                .size(11)
+                .size(11.0 * s)
                 .color(TEXT)
-                .width(Length::Fixed(360.0))
+                .width(Length::Fixed(360.0 * s))
                 .wrapping(iced::core::text::Wrapping::Word),
-            button(text("OK").size(11).color(Color::WHITE))
+            button(text("OK").size(11.0 * s).color(Color::WHITE))
                 .on_press(dismiss)
                 .style(ok_button_style),
         ]
-        .spacing(10),
+        .spacing(10.0 * s),
     )
-    .width(Length::Fixed(380.0))
-    .padding(16)
+    .width(Length::Fixed(380.0 * s))
+    .padding(16.0 * s)
     .style(panel_style);
 
     dialog_stack(panel, dismiss)
@@ -680,49 +716,50 @@ fn mappings_dialog<'a>(state: &'a DizmoGui) -> iced::widget::Stack<'a, Message> 
         _ => ("Mappings", None),
     };
 
+    let s = state.scale();
     let mut content = column![
-        text(title).size(14).color(TEXT),
-        iced::widget::rule::horizontal(1),
+        text(title).size(14.0 * s).color(TEXT),
+        iced::widget::rule::horizontal(1.0 * s),
     ]
-    .spacing(10);
+    .spacing(10.0 * s);
 
     match body {
         Some(mappings) if !mappings.is_empty() => {
             content = content.push(
                 row![
                     text("Instrument")
-                        .size(10)
+                        .size(10.0 * s)
                         .color(TEXT_DIM)
-                        .width(Length::Fixed(200.0)),
+                        .width(Length::Fixed(200.0 * s)),
                     text("MIDI notes")
-                        .size(10)
+                        .size(10.0 * s)
                         .color(TEXT_DIM)
-                        .width(Length::Fixed(160.0)),
+                        .width(Length::Fixed(160.0 * s)),
                     text("Channel map")
-                        .size(10)
+                        .size(10.0 * s)
                         .color(TEXT_DIM)
                         .width(Length::Fill),
                 ]
-                .spacing(8),
+                .spacing(8.0 * s),
             );
-            let mut list = column![].spacing(4);
+            let mut list = column![].spacing(4.0 * s);
             for mapping in mappings {
                 list = list.push(
                     row![
                         text(&mapping.instrument)
-                            .size(11)
+                            .size(11.0 * s)
                             .color(TEXT)
-                            .width(Length::Fixed(200.0)),
+                            .width(Length::Fixed(200.0 * s)),
                         text(note_text(&mapping.notes))
-                            .size(11)
+                            .size(11.0 * s)
                             .color(TEXT)
-                            .width(Length::Fixed(160.0)),
+                            .width(Length::Fixed(160.0 * s)),
                         text(channel_text(&mapping.channel_map))
-                            .size(11)
+                            .size(11.0 * s)
                             .color(TEXT_DIM)
                             .width(Length::Fill),
                     ]
-                    .spacing(8),
+                    .spacing(8.0 * s),
                 );
             }
             content = content.push(
@@ -734,16 +771,16 @@ fn mappings_dialog<'a>(state: &'a DizmoGui) -> iced::widget::Stack<'a, Message> 
         _ => {
             content = content.push(
                 text("Load a kit to see its MIDI and channel mappings")
-                    .size(11)
+                    .size(11.0 * s)
                     .color(TEXT_DIM),
             );
         }
     }
 
     let panel = container(content)
-        .width(Length::Fixed(560.0))
-        .height(Length::Fixed(360.0))
-        .padding(16)
+        .width(Length::Fixed(560.0 * s))
+        .height(Length::Fixed(360.0 * s))
+        .padding(16.0 * s)
         .style(panel_style);
 
     dialog_stack(panel, Message::ToggleMappings)

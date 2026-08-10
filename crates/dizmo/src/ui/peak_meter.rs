@@ -24,11 +24,13 @@ pub struct PeakMeter {
     level: f32,
     /// The decaying peak-hold cap (linear 0..1), at least `level`.
     hold: f32,
+    /// The uniform UI zoom, applied to the canvas padding and segment gap.
+    scale: f32,
 }
 
 impl PeakMeter {
-    pub fn new(level: f32, hold: f32) -> Self {
-        Self { level, hold }
+    pub fn new(level: f32, hold: f32, scale: f32) -> Self {
+        Self { level, hold, scale }
     }
 }
 
@@ -45,9 +47,9 @@ impl<Message> Program<Message> for PeakMeter {
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
 
-        let pad_x = 6.0;
-        let pad_y = 4.0;
-        let gap = 2.0;
+        let pad_x = 6.0 * self.scale;
+        let pad_y = 4.0 * self.scale;
+        let gap = 2.0 * self.scale;
         let inner_height = bounds.height - pad_y * 2.0;
         let segment_height =
             (inner_height - gap * (NUM_SEGMENTS as f32 - 1.0)) / NUM_SEGMENTS as f32;
