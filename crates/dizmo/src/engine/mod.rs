@@ -4,7 +4,6 @@
 //! built off the audio thread. It never allocates or takes locks while
 //! processing.
 
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,6 +16,14 @@ use crate::params::NUM_CHANNELS;
 /// Maximum number of simultaneously playing voices; the oldest is faded out
 /// first when exceeded.
 pub const MAX_VOICES: usize = 64;
+
+/// Minimum sample-set size for the v2 power-list spread: with fewer samples
+/// the velocity layers get wider. Matches DrumGizmo's `MIN_SAMPLE_SET_SIZE`.
+const MIN_SAMPLE_SET_SIZE: usize = 26;
+
+/// Redraws allowed when a v2 power-list draw repeats the previously chosen
+/// sample (DrumGizmo's `PowerList::get` retry count).
+const MAX_RETRIES: usize = 3;
 
 /// Length of the click-prevention fade applied when a ringing voice is cut
 /// early by voice stealing at `MAX_VOICES` or by all-notes-off. No new hit
@@ -46,8 +53,12 @@ pub struct Engine {
     output_index: HashMap<String, usize>,
     /// Instrument name -> index into `kit.instruments`.
     instrument_index: HashMap<String, usize>,
-    /// Per instrument: sample indices sorted by ascending power (v2 ordering).
-    sample_order: Vec<Vec<usize>>,
+    /// Per instrument: the smallest and largest sample power (v2 power list).
+    power_min: Vec<f32>,
+    power_max: Vec<f32>,
+    /// Per instrument: the sample chosen by the last v2 power-list draw, used
+    /// to avoid repeating the same sample twice in a row.
+    last_v2_sample: Vec<Option<usize>>,
     /// The current host sample rate, used for choke fade times.
     sample_rate: f32,
     voices: Vec<Voice>,
@@ -111,22 +122,16 @@ impl Engine {
             .enumerate()
             .map(|(index, instrument)| (instrument.name.clone(), index))
             .collect();
-        let sample_order = kit
-            .instruments
-            .iter()
-            .map(|instrument| {
-                let mut order: Vec<usize> = (0..instrument.samples.len()).collect();
-                if instrument.is_v2() {
-                    order.sort_by(|&a, &b| {
-                        instrument.samples[a]
-                            .power
-                            .partial_cmp(&instrument.samples[b].power)
-                            .unwrap_or(Ordering::Equal)
-                    });
-                }
-                order
-            })
-            .collect();
+        let (power_min, power_max) = kit.instruments.iter().map(|instrument| {
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+            for sample in &instrument.samples {
+                min = min.min(sample.power);
+                max = max.max(sample.power);
+            }
+            (min, max)
+        }).unzip();
+        let last_v2_sample = vec![None; kit.instruments.len()];
 
         Self {
             sample_rate: kit.samplerate as f32,
@@ -135,7 +140,9 @@ impl Engine {
             midimap,
             output_index,
             instrument_index,
-            sample_order,
+            power_min,
+            power_max,
+            last_v2_sample,
             voices: Vec::new(),
             rng: XorShift::new(),
         }
@@ -367,14 +374,7 @@ impl Engine {
         let velocity = velocity.clamp(0.0, 1.0);
 
         if instrument.is_v2() {
-            // Loudest sample whose power does not exceed the velocity.
-            let order = &self.sample_order[instrument_index];
-            order
-                .iter()
-                .rev()
-                .copied()
-                .find(|&index| instrument.samples[index].power <= velocity)
-                .or_else(|| order.first().copied())
+            self.select_v2_sample(instrument_index, velocity)
         } else {
             // v1.0: pick the velocity group containing the velocity, then a
             // sample reference weighted by its probability.
@@ -404,6 +404,55 @@ impl Engine {
                 .iter()
                 .position(|sample| Some(sample.name.as_str()) == fallback)
         }
+    }
+
+    /// Version 2.0 sample selection (the PowerList). Draws a Gaussian target
+    /// power centered on the velocity's position in the instrument's power
+    /// range, then picks the sample whose power is closest. If the draw lands
+    /// on the same sample as the previous hit, it redraws up to [`MAX_RETRIES`]
+    /// times (DrumGizmo's anti-repetition).
+    fn select_v2_sample(&mut self, instrument_index: usize, velocity: f32) -> Option<usize> {
+        let samples = &self.kit.instruments[instrument_index].samples;
+        if samples.is_empty() {
+            return None;
+        }
+
+        let power_span = self.power_max[instrument_index] - self.power_min[instrument_index];
+        let width = samples.len().max(MIN_SAMPLE_SET_SIZE) as f32;
+        let stddev = power_span / width;
+        let mean = velocity * (power_span - stddev) + stddev / 2.0;
+        let power_min = self.power_min[instrument_index];
+
+        let mut retries = MAX_RETRIES;
+        let chosen = loop {
+            // One Box–Muller draw: two uniform values in [0,1) map to a sample
+            // of the normal distribution centered on `mean`.
+            let u1 = self.rng.next_f32();
+            let u2 = self.rng.next_f32();
+            let x = (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos();
+            let lvl = mean + stddev * x + power_min;
+
+            // The sample whose power is closest to the draw. First candidate
+            // wins ties (only strictly-smaller distances replace it).
+            let mut best = 0usize;
+            let mut best_dist = f32::INFINITY;
+            for (index, sample) in samples.iter().enumerate() {
+                let dist = (sample.power - lvl).abs();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best = index;
+                }
+            }
+
+            let candidate = Some(best);
+            if self.last_v2_sample[instrument_index] != candidate || retries == 0 {
+                break candidate;
+            }
+            retries -= 1;
+        };
+
+        self.last_v2_sample[instrument_index] = chosen;
+        chosen
     }
 
     /// Resolves the sample's audio files into output streams via the
@@ -474,8 +523,9 @@ fn begin_cut_fade(fade_frames: f32, voice: &mut Voice) {
     }
 }
 
-/// A tiny deterministic PRNG for probability-weighted sample selection (v1.0
-/// kits). Not cryptographically strong, but cheap and good enough for this.
+/// A tiny deterministic PRNG for sample selection (v1.0 velocity groups and
+/// the v2 power list). Not cryptographically strong, but cheap and good enough
+/// for this.
 struct XorShift(u64);
 
 impl XorShift {

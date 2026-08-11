@@ -948,3 +948,113 @@ fn kit_channels_beyond_16_are_ignored_without_crashing() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const POWER_DRUMKIT: &str = r#"<drumkit version="2.0">
+  <metadata><title>Power Kit</title><defaultmidimap src="midimap.xml"/></metadata>
+  <channels>
+    <channel name="Kick"/>
+  </channels>
+  <instruments>
+    <instrument name="Kick" file="inst_kick.xml">
+      <channelmap in="Kick" out="Kick" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+
+const POWER_INST: &str = r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="Kick" file="kick1.wav" filechannel="1"/>
+    </sample>
+    <sample name="Kick-2" power="0.5">
+      <audiofile channel="Kick" file="kick2.wav" filechannel="1"/>
+    </sample>
+    <sample name="Kick-3" power="0.9">
+      <audiofile channel="Kick" file="kick3.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>
+"#;
+
+const POWER_MIDIMAP: &str = r#"<midimap>
+  <map note="36" instr="Kick"/>
+</midimap>
+"#;
+
+/// Triggers `hits` note-ons at `velocity` and counts which of the three power
+/// layers played each time. Each sample's audio is a constant value, so once a
+/// hit has rung past the 1 ms attack (44 frames) its output sample equals the
+/// layer's constant, letting us read the choice back from the buffer. The
+/// self-choke fades the previous voice within 100 frames, so a 100-frame block
+/// per hit leaves only the fresh voice audible.
+fn count_power_choices(engine: &mut Engine, velocity: u8, hits: usize) -> [usize; 3] {
+    let mut counts = [0usize; 3];
+    for _ in 0..hits {
+        engine.note_on(36, velocity);
+        let out = run(engine, 1, 100);
+        let value = (out[0][99] * 32768.0).round() as i32;
+        let layer = match value {
+            1000 => 0,
+            2000 => 1,
+            3000 => 2,
+            other => panic!("unexpected sample value {other}"),
+        };
+        counts[layer] += 1;
+    }
+    counts
+}
+
+#[test]
+fn powerlist_spreads_adjacent_layers_near_the_velocity_boundary() {
+    let dir = setup(
+        "powerlist-boundary",
+        POWER_DRUMKIT,
+        &[("inst_kick.xml", POWER_INST), ("midimap.xml", POWER_MIDIMAP)],
+        &[
+            ("kick1.wav", 1, &[1000; 200]),
+            ("kick2.wav", 1, &[2000; 200]),
+            ("kick3.wav", 1, &[3000; 200]),
+        ],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+
+    // Powers 0.1/0.5/0.9 with the 26-sample spread put the velocity-97 target
+    // right on the 0.5/0.9 midpoint, so both layers should be picked often.
+    let counts = count_power_choices(&mut engine, 97, 300);
+    assert!(
+        counts[1] >= 60 && counts[2] >= 60,
+        "expected both upper layers near the boundary, got {counts:?}"
+    );
+    // The softest layer is ~13 stddevs from the target: it must never play.
+    assert_eq!(counts[0], 0, "softest layer played unexpectedly: {counts:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn powerlist_pins_the_extremes_at_min_and_max_velocity() {
+    let dir = setup(
+        "powerlist-extremes",
+        POWER_DRUMKIT,
+        &[("inst_kick.xml", POWER_INST), ("midimap.xml", POWER_MIDIMAP)],
+        &[
+            ("kick1.wav", 1, &[1000; 200]),
+            ("kick2.wav", 1, &[2000; 200]),
+            ("kick3.wav", 1, &[3000; 200]),
+        ],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+
+    // Velocity 1 targets the bottom of the range: the softest layer always wins.
+    let soft = count_power_choices(&mut engine, 1, 100);
+    assert_eq!(soft[0], 100, "softest layer not dominant: {soft:?}");
+
+    // Velocity 127 targets the top: the loudest layer always wins.
+    let loud = count_power_choices(&mut engine, 127, 100);
+    assert_eq!(loud[2], 100, "loudest layer not dominant: {loud:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
