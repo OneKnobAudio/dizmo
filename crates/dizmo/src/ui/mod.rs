@@ -18,7 +18,7 @@ use nice_plug_iced::{
 };
 use std::any::Any;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -65,6 +65,9 @@ const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(1240.0, 560.0);
 
 /// How often the ticker fires, driving the meter and LED animations.
 const TICK_INTERVAL: Duration = Duration::from_millis(40);
+
+/// Counts editor spawns so the debug prints can pair each open with its drop.
+static GUI_INSTANCES: AtomicUsize = AtomicUsize::new(0);
 
 /// How long the per-channel peak-hold cap takes to fall after the signal
 /// drops, so the meter's cap lingers briefly on each hit. Kept short so a
@@ -182,10 +185,20 @@ pub struct DizmoGui {
     /// The current logical window size, driven by host resize events. Used to
     /// compute the uniform UI zoom; see [`DizmoGui::scale`].
     pub ui_size: iced::Size,
+    /// Sequence number of this editor instance, for pairing open/drop debug prints.
+    pub instance: usize,
+}
+
+impl Drop for DizmoGui {
+    fn drop(&mut self) {
+        eprintln!("[dizmo] editor DROPPED #{}", self.instance);
+    }
 }
 
 impl DizmoGui {
     fn new(editor_state: IcedEditorState<EditorState>, nice_ctx: NiceGuiContext) -> Self {
+        let instance = GUI_INSTANCES.fetch_add(1, Ordering::SeqCst) + 1;
+        eprintln!("[dizmo] editor OPEN #{instance}");
         // Seed the header with whatever kit is already loaded, so reopening the
         // window does not lose the current kit.
         let load_status = match &*editor_state
@@ -210,6 +223,7 @@ impl DizmoGui {
             browser: browser::Browser::new(),
             peak_hold: [0.0; NUM_CHANNELS],
             ui_size: iced::Size::new(WINDOW_SIZE.width, WINDOW_SIZE.height),
+            instance,
         }
     }
 
@@ -457,7 +471,19 @@ fn theme(_state: &DizmoGui) -> iced::Theme {
 /// The plugin editor: wraps the `nice-plug-iced` editor and hands it the
 /// parameter set.
 pub struct DizmoEditor {
-    inner: Box<dyn Editor>,
+    window_state: Arc<WindowState>,
+    params: Arc<DizmoParams>,
+    show_pan: bool,
+    load_kit: Arc<dyn Fn(PathBuf) + Send + Sync>,
+    status_rx: Option<crossbeam_channel::Receiver<KitStatus>>,
+    kit_info: Arc<Mutex<Option<KitInfo>>>,
+    levels: Arc<[AtomicU32; NUM_CHANNELS]>,
+    notifier: PollSubNotifier,
+    /// The currently active editor. Replaced with a fresh editor on every
+    /// `spawn` (see [`DizmoEditor::spawn`]) so that each open starts from a
+    /// fresh `Some` editor state, regardless of how quickly the host tears
+    /// down the previous editor instance.
+    inner: Mutex<Box<dyn Editor>>,
 }
 
 impl DizmoEditor {
@@ -471,13 +497,55 @@ impl DizmoEditor {
         notifier: PollSubNotifier,
     ) -> Self {
         let window_state = params.editor_state.clone();
-        let editor_state =
-            EditorState::new(params, show_pan, load_kit, status_rx, kit_info, levels);
+        let inner = Self::build_editor(
+            window_state.clone(),
+            &params,
+            show_pan,
+            &load_kit,
+            &status_rx,
+            &kit_info,
+            &levels,
+            &notifier,
+        );
 
-        let inner = create_iced_editor(
+        Self {
+            window_state,
+            params,
+            show_pan,
+            load_kit,
+            status_rx,
+            kit_info,
+            levels,
+            notifier,
+            inner: Mutex::new(inner),
+        }
+    }
+
+    /// Builds a brand-new editor with its own fresh `Some` editor state. Each
+    /// `spawn` gets one of these, so `from_shared` can never find `None`.
+    fn build_editor(
+        window_state: Arc<WindowState>,
+        params: &Arc<DizmoParams>,
+        show_pan: bool,
+        load_kit: &Arc<dyn Fn(PathBuf) + Send + Sync>,
+        status_rx: &Option<crossbeam_channel::Receiver<KitStatus>>,
+        kit_info: &Arc<Mutex<Option<KitInfo>>>,
+        levels: &Arc<[AtomicU32; NUM_CHANNELS]>,
+        notifier: &PollSubNotifier,
+    ) -> Box<dyn Editor> {
+        let editor_state = EditorState::new(
+            params.clone(),
+            show_pan,
+            load_kit.clone(),
+            status_rx.clone(),
+            kit_info.clone(),
+            levels.clone(),
+        );
+
+        create_iced_editor(
             window_state,
             editor_state,
-            notifier,
+            notifier.clone(),
             EditorSettings {
                 window_title: "DIZMO".to_string(),
                 ignore_non_modifier_keys: true,
@@ -502,9 +570,7 @@ impl DizmoEditor {
                 .run()
             },
         )
-        .expect("Failed to create the DIZMO editor");
-
-        Self { inner }
+        .expect("Failed to create the DIZMO editor")
     }
 }
 
@@ -525,23 +591,42 @@ impl Default for DizmoEditor {
 
 impl Editor for DizmoEditor {
     fn spawn(&self, parent: ParentWindowHandle, context: Arc<dyn GuiContext>) -> Box<dyn Any> {
-        self.inner.spawn(parent, context)
+        eprintln!("[dizmo] Editor::spawn called");
+        let editor = Self::build_editor(
+            self.window_state.clone(),
+            &self.params,
+            self.show_pan,
+            &self.load_kit,
+            &self.status_rx,
+            &self.kit_info,
+            &self.levels,
+            &self.notifier,
+        );
+        let handle = editor.spawn(parent, context);
+        *self.inner.lock().expect("editor mutex poisoned") = editor;
+        handle
     }
 
     fn size(&self) -> Size {
-        self.inner.size()
+        self.inner.lock().expect("editor mutex poisoned").size()
     }
 
     fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        self.inner.param_value_changed(id, normalized_value);
+        self.inner.lock().expect("editor mutex poisoned").param_value_changed(id, normalized_value);
     }
 
     fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
-        self.inner.param_modulation_changed(id, modulation_offset);
+        self.inner
+            .lock()
+            .expect("editor mutex poisoned")
+            .param_modulation_changed(id, modulation_offset);
     }
 
     fn param_values_changed(&self) {
-        self.inner.param_values_changed();
+        self.inner
+            .lock()
+            .expect("editor mutex poisoned")
+            .param_values_changed();
     }
 
     fn on_virtual_key_from_host(
@@ -551,6 +636,8 @@ impl Editor for DizmoEditor {
         modifiers: Modifiers,
     ) -> bool {
         self.inner
+            .lock()
+            .expect("editor mutex poisoned")
             .on_virtual_key_from_host(key_code, is_down, modifiers)
     }
 
@@ -565,7 +652,7 @@ impl Editor for DizmoEditor {
     }
 
     fn set_scale_factor(&self, factor: f64) -> bool {
-        self.inner.set_scale_factor(factor)
+        self.inner.lock().expect("editor mutex poisoned").set_scale_factor(factor)
     }
 
     fn resize_hint(&self) -> ResizeHint {

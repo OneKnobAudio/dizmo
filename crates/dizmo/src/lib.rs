@@ -452,7 +452,6 @@ macro_rules! impl_dizmo_plugin {
                     let host_sample_rate = host_sample_rate.clone();
                     std::thread::spawn(move || {
                         let rate = host_sample_rate.load(Ordering::Relaxed);
-                        eprintln!("[dizmo] loading kit '{path:?}' (rate {rate})");
                         let start = std::time::Instant::now();
                         let load = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             engine::load_engine_with_progress(
@@ -479,11 +478,6 @@ macro_rules! impl_dizmo_plugin {
                                     mappings: engine.mappings(),
                                     warnings,
                                 };
-                                eprintln!(
-                                    "[dizmo] kit '{}' loaded in {:?}",
-                                    info.name,
-                                    start.elapsed()
-                                );
                                 let _ = engine_tx.send(Ok(engine));
                                 *kit_info.lock().expect("kit info mutex poisoned") =
                                     Some(info.clone());
