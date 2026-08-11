@@ -518,11 +518,6 @@ macro_rules! impl_dizmo_plugin {
                 self.core.set_sample_rate(buffer_config.sample_rate);
                 self.core
                     .set_block_size(buffer_config.max_buffer_size as usize);
-                if let Ok(path) = std::env::var("DIZMO_KIT") {
-                    if let Err(err) = self.load_kit(path) {
-                        eprintln!("DIZMO: failed to load kit: {err}");
-                    }
-                }
                 true
             }
 
