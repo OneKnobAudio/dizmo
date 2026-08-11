@@ -1,0 +1,321 @@
+//! Context panels: Kit, Instrument, Sample, MIDI map, and the welcome screen.
+
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_input, Space,
+};
+use iced::{Element, Length};
+
+use super::theme::{
+    danger_button_style, menu_style, pill, pick_list_style, pill_button_style, text_input_style,
+    TEXT, TEXT_DIM,
+};
+use super::{Message, Selection};
+use crate::model::EditorKit;
+
+pub fn welcome() -> Element<'static, Message> {
+    container(
+        column![
+            text("DIZMO Editor").size(36).color(TEXT),
+            text("Create or edit a DrumGizmo-style kit.").size(14).color(TEXT_DIM),
+            row![
+                button(text("New Kit…"))
+                    .on_press(Message::NewKitClicked)
+                    .style(pill(false)),
+                button(text("Open Kit…"))
+                    .on_press(Message::OpenKitClicked)
+                    .style(pill(false)),
+            ]
+            .spacing(12),
+        ]
+        .spacing(18)
+        .align_x(iced::Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Center)
+    .align_y(iced::alignment::Vertical::Center)
+    .into()
+}
+
+pub fn kit_panel<'a>(kit: &'a EditorKit, samplerate_text: &'a str) -> Element<'a, Message> {
+    let mut content = column![
+        text("Kit").size(18).color(TEXT),
+        field("Title", &kit.drumkit.name, Message::KitName),
+        field("Description", &kit.drumkit.description, Message::KitDescription),
+        field("Sample rate", samplerate_text, Message::KitSamplerate),
+        iced::widget::rule::horizontal(1.0),
+        text("Output channels  ·  workflow step 1").size(12).color(TEXT),
+    ]
+    .spacing(8);
+
+    if kit.drumkit.channels.is_empty() {
+        content = content.push(
+            text("Define at least one channel before adding instruments.")
+                .size(11)
+                .color(TEXT_DIM),
+        );
+    } else {
+        let mut channels = column![].spacing(4);
+        for (i, ch) in kit.drumkit.channels.iter().enumerate() {
+            channels = channels.push(
+                row![
+                    text_input("Channel name", &ch.name)
+                        .on_input(move |name| Message::RenameChannel(i, name))
+                        .style(text_input_style)
+                        .width(Length::Fill),
+                    button(text("×"))
+                        .on_press(Message::RemoveChannel(i))
+                        .style(danger_button_style),
+                ]
+                .spacing(6),
+            );
+        }
+        content = content.push(channels);
+    }
+
+    content = content.push(
+        button(text("+ Add channel"))
+            .on_press(Message::AddChannel)
+            .style(pill(false)),
+    );
+    content = content.push(iced::widget::rule::horizontal(1.0));
+    content = content.push(
+        row![
+            text("Instruments").size(12).color(TEXT),
+            Space::new().width(Length::Fill),
+            button(text("+ Add instrument"))
+                .on_press(Message::AddInstrument)
+                .style(pill(false)),
+        ]
+        .align_y(iced::Alignment::Center),
+    );
+
+    scrollable(content).width(Length::Fill).height(Length::Fill).into()
+}
+
+pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Message> {
+    let inst = &kit.instruments[index];
+
+    let channel_options: Vec<String> = {
+        let mut options = vec!["Unassigned".to_string()];
+        options.extend(kit.channel_names());
+        options
+    };
+    let current = inst
+        .reference
+        .channel_map
+        .iter()
+        .find(|m| m.is_main)
+        .map(|m| m.out_name.clone())
+        .unwrap_or_else(|| "Unassigned".to_string());
+    let assign = pick_list(
+        channel_options.clone(),
+        Some(current),
+        move |picked: String| {
+            let channel = if picked == "Unassigned" {
+                None
+            } else {
+                channel_options
+                    .iter()
+                    .position(|option| option == &picked)
+                    .and_then(|position| position.checked_sub(1))
+            };
+            Message::AssignChannel(index, channel)
+        },
+    )
+    .placeholder("Unassigned")
+    .style(pick_list_style)
+    .menu_style(menu_style)
+    .width(Length::Fill);
+
+    let mut samples = column![].spacing(4);
+    if inst.instrument.samples.is_empty() {
+        samples = samples.push(
+            text("No samples yet — add some (workflow step 3).")
+                .size(11)
+                .color(TEXT_DIM),
+        );
+    }
+    for (s, sample) in inst.instrument.samples.iter().enumerate() {
+        samples = samples.push(
+            button(text(&sample.name).size(12).color(TEXT))
+                .on_press(Message::Select(Selection::Sample(index, s)))
+                .style(move |_theme, status| pill_button_style(false, status))
+                .width(Length::Fill),
+        );
+    }
+
+    column![
+        text(&inst.reference.name).size(18).color(TEXT),
+        text(format!("{}  ·  v{}", inst.file.display(), inst.instrument.version))
+            .size(11)
+            .color(TEXT_DIM),
+        field(
+            "Instrument name",
+            &inst.reference.name,
+            move |name| Message::RenameInstrument(index, name),
+        ),
+        column![
+            text("Assigned to channel  ·  workflow step 4").size(11).color(TEXT_DIM),
+            assign,
+        ]
+        .spacing(4),
+        iced::widget::rule::horizontal(1.0),
+        text("Samples").size(12).color(TEXT),
+        samples,
+        button(text("+ Add sample"))
+            .on_press(Message::AddSample(index))
+            .style(pill(false)),
+        iced::widget::rule::horizontal(1.0),
+        button(text("Remove instrument"))
+            .on_press(Message::RemoveInstrument(index))
+            .style(danger_button_style),
+    ]
+    .spacing(8)
+    .into()
+}
+
+pub fn sample_panel<'a>(kit: &'a EditorKit, instrument: usize, sample_idx: usize) -> Element<'a, Message> {
+    let sample = &kit.instruments[instrument].instrument.samples[sample_idx];
+
+    let mut audio_files = column![].spacing(2);
+    for af in &sample.audio_files {
+        audio_files = audio_files.push(
+            row![
+                text(&af.channel).size(11).color(TEXT).width(Length::Fixed(120.0)),
+                text(&af.file).size(11).color(TEXT_DIM),
+                text(format!("file channel {}", af.file_channel + 1))
+                    .size(11)
+                    .color(TEXT_DIM),
+            ]
+            .spacing(8),
+        );
+    }
+    if sample.audio_files.is_empty() {
+        audio_files = audio_files.push(
+            text("No audio files yet — import a WAV (Phase 4).")
+                .size(11)
+                .color(TEXT_DIM),
+        );
+    }
+
+    column![
+        text("Sample").size(18).color(TEXT),
+        field(
+            "Name",
+            &sample.name,
+            move |name| Message::RenameSample(instrument, sample_idx, name),
+        ),
+        row![
+            text("Power").size(11).color(TEXT_DIM).width(Length::Fixed(60.0)),
+            iced::widget::slider(
+                0.0..=1.0,
+                sample.power,
+                move |value| Message::SamplePower(instrument, sample_idx, value),
+            )
+            .width(Length::Fill),
+            text(format!("{:.2}", sample.power)).size(11).color(TEXT).width(Length::Fixed(36.0)),
+        ]
+        .align_y(iced::Alignment::Center)
+        .spacing(8),
+        checkbox(sample.normalized)
+            .label("Normalized")
+            .on_toggle(move |checked| Message::SampleNormalized(instrument, sample_idx, checked)),
+        iced::widget::rule::horizontal(1.0),
+        text("Audio files").size(12).color(TEXT),
+        audio_files,
+        button(text("▶ Preview"))
+            .on_press(Message::Preview(instrument, sample_idx))
+            .style(pill(false)),
+        button(text("Remove sample"))
+            .on_press(Message::RemoveSample(instrument, sample_idx))
+            .style(danger_button_style),
+    ]
+    .spacing(8)
+    .into()
+}
+
+pub fn midimap_panel<'a>(kit: &'a EditorKit, note_draft: &'a str) -> Element<'a, Message> {
+    let instrument_names: Vec<String> = kit
+        .instruments
+        .iter()
+        .map(|i| i.reference.name.clone())
+        .collect();
+
+    let mut rows = column![].spacing(4);
+    if kit.midimap.entries.is_empty() {
+        rows = rows.push(text("No notes mapped yet.").size(11).color(TEXT_DIM));
+    }
+    for (row, entry) in kit.midimap.entries.iter().enumerate() {
+        let options = instrument_names.clone();
+        let selected = instrument_names
+            .iter()
+            .find(|name| **name == entry.instrument)
+            .cloned();
+        rows = rows.push(
+            row![
+                text(format!("{}  ({})", midi_note_name(entry.note), entry.note))
+                    .size(11)
+                    .color(TEXT)
+                    .width(Length::Fixed(110.0)),
+                pick_list(
+                    options.clone(),
+                    selected,
+                    move |picked: String| {
+                        Message::MidimapAssign(row, options.iter().position(|option| option == &picked))
+                    },
+                )
+                .placeholder("Unassigned")
+                .style(pick_list_style)
+                .menu_style(menu_style)
+                .width(Length::Fill),
+                button(text("×"))
+                    .on_press(Message::MidimapRemove(row))
+                    .style(danger_button_style),
+            ]
+            .spacing(6),
+        );
+    }
+
+    column![
+        text("MIDI map").size(18).color(TEXT),
+        text("Map MIDI notes to instruments.").size(11).color(TEXT_DIM),
+        iced::widget::rule::horizontal(1.0),
+        rows,
+        row![
+            text_input("note 0–127", note_draft)
+                .on_input(Message::MidimapNote)
+                .on_submit(Message::MidimapAdd)
+                .style(text_input_style)
+                .width(Length::Fixed(120.0)),
+            button(text("+ Map note"))
+                .on_press(Message::MidimapAdd)
+                .style(pill(false)),
+        ]
+        .spacing(6),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// A labelled, styled text input.
+fn field<'a>(
+    label: &'a str,
+    value: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    column![
+        text(label).size(11).color(TEXT_DIM),
+        text_input("", value).on_input(on_input).style(text_input_style),
+    ]
+    .spacing(4)
+    .into()
+}
+
+pub(crate) fn midi_note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = (note / 12).saturating_sub(1);
+    format!("{}{}", NAMES[(note % 12) as usize], octave)
+}
