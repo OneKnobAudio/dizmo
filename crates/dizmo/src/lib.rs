@@ -452,7 +452,6 @@ macro_rules! impl_dizmo_plugin {
                     let host_sample_rate = host_sample_rate.clone();
                     std::thread::spawn(move || {
                         let rate = host_sample_rate.load(Ordering::Relaxed);
-                        let start = std::time::Instant::now();
                         let load = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             engine::load_engine_with_progress(
                                 &path,

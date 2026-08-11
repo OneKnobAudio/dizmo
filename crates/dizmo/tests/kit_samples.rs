@@ -1,4 +1,4 @@
-use dizmo::kit::{DizmoKit, SampleError, load_samples, load_samples_with_progress};
+use dizmo::kit::{DizmoKit, SampleError, load_samples_with_progress};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -66,7 +66,7 @@ fn decodes_samples_and_deduplicates() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, None).unwrap();
+    let bank = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap();
 
     // The two samples share one file, so it is decoded only once.
     assert_eq!(bank.len(), 1);
@@ -110,7 +110,7 @@ fn loads_multiple_files() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, None).unwrap();
+    let bank = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap();
     assert_eq!(bank.len(), 2);
     assert_eq!(bank.file(&dir.join("kick.wav")).unwrap().sample_rate, 44100);
 }
@@ -130,7 +130,7 @@ fn errors_on_missing_file() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit, None).unwrap_err();
+    let error = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap_err();
     assert!(matches!(error, SampleError::Io { .. }), "got {error:?}");
 }
 
@@ -150,7 +150,7 @@ fn errors_on_invalid_wav() {
     fs::write(dir.join("kick.wav"), b"this is not a wav file").unwrap();
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit, None).unwrap_err();
+    let error = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap_err();
     assert!(matches!(error, SampleError::Decode { .. }), "got {error:?}");
 }
 
@@ -169,7 +169,7 @@ fn errors_on_channel_out_of_range() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit, None).unwrap_err();
+    let error = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap_err();
     match error {
         SampleError::ChannelOutOfRange {
             sample,
@@ -202,7 +202,7 @@ fn decodes_stereo_int_pcm_normalized() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, None).unwrap();
+    let bank = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap();
     let kick = &kit.instruments[0];
     let sample = &kick.samples[0];
 
@@ -233,7 +233,7 @@ fn resamples_down_to_target_rate() {
     write_wav(&dir.join("kick.wav"), 1, 44100, &[1000; 8]);
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, Some(22050)).unwrap();
+    let bank = load_samples_with_progress(&kit, Some(22050), &mut |_, _| {}).unwrap();
     let file = bank.file(&dir.join("kick.wav")).unwrap();
 
     assert_eq!(file.sample_rate, 22050);
@@ -255,7 +255,7 @@ fn resamples_up_to_target_rate() {
     write_wav(&dir.join("kick.wav"), 1, 22050, &[1, 2, 3]);
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, Some(44100)).unwrap();
+    let bank = load_samples_with_progress(&kit, Some(44100), &mut |_, _| {}).unwrap();
     let file = bank.file(&dir.join("kick.wav")).unwrap();
     let data = file.channels[0].as_ref().unwrap();
 
@@ -273,7 +273,7 @@ fn keeps_native_rate_when_target_matches() {
     write_wav(&dir.join("kick.wav"), 1, 44100, &[1000, 2000, 3000]);
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, Some(44100)).unwrap();
+    let bank = load_samples_with_progress(&kit, Some(44100), &mut |_, _| {}).unwrap();
     let file = bank.file(&dir.join("kick.wav")).unwrap();
 
     assert_eq!(file.sample_rate, 44100);
@@ -300,7 +300,7 @@ fn resampling_all_channels_of_a_stereo_file() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, Some(22050)).unwrap();
+    let bank = load_samples_with_progress(&kit, Some(22050), &mut |_, _| {}).unwrap();
     let file = bank.file(&dir.join("kick.wav")).unwrap();
 
     assert_eq!(file.channels.len(), 2);
@@ -363,7 +363,7 @@ fn skips_channels_no_sample_references() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let bank = load_samples(&kit, Some(22050)).unwrap();
+    let bank = load_samples_with_progress(&kit, Some(22050), &mut |_, _| {}).unwrap();
     let file = bank.file(&dir.join("kick.wav")).unwrap();
 
     // The unreferenced right channel is never decoded or resampled.
@@ -407,6 +407,6 @@ fn parallel_load_reports_first_error_in_load_order() {
     fs::write(dir.join("bad.wav"), b"not a wav file").unwrap();
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples(&kit, None).unwrap_err();
+    let error = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap_err();
     assert!(matches!(error, SampleError::Decode { .. }), "got {error:?}");
 }

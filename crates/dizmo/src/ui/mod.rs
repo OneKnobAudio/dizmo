@@ -18,7 +18,7 @@ use nice_plug_iced::{
 };
 use std::any::Any;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -65,9 +65,6 @@ const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(1240.0, 560.0);
 
 /// How often the ticker fires, driving the meter and LED animations.
 const TICK_INTERVAL: Duration = Duration::from_millis(40);
-
-/// Counts editor spawns so the debug prints can pair each open with its drop.
-static GUI_INSTANCES: AtomicUsize = AtomicUsize::new(0);
 
 /// How long the per-channel peak-hold cap takes to fall after the signal
 /// drops, so the meter's cap lingers briefly on each hit. Kept short so a
@@ -185,20 +182,10 @@ pub struct DizmoGui {
     /// The current logical window size, driven by host resize events. Used to
     /// compute the uniform UI zoom; see [`DizmoGui::scale`].
     pub ui_size: iced::Size,
-    /// Sequence number of this editor instance, for pairing open/drop debug prints.
-    pub instance: usize,
-}
-
-impl Drop for DizmoGui {
-    fn drop(&mut self) {
-        eprintln!("[dizmo] editor DROPPED #{}", self.instance);
-    }
 }
 
 impl DizmoGui {
     fn new(editor_state: IcedEditorState<EditorState>, nice_ctx: NiceGuiContext) -> Self {
-        let instance = GUI_INSTANCES.fetch_add(1, Ordering::SeqCst) + 1;
-        eprintln!("[dizmo] editor OPEN #{instance}");
         // Seed the header with whatever kit is already loaded, so reopening the
         // window does not lose the current kit.
         let load_status = match &*editor_state
@@ -223,7 +210,6 @@ impl DizmoGui {
             browser: browser::Browser::new(),
             peak_hold: [0.0; NUM_CHANNELS],
             ui_size: iced::Size::new(WINDOW_SIZE.width, WINDOW_SIZE.height),
-            instance,
         }
     }
 
@@ -612,7 +598,10 @@ impl Editor for DizmoEditor {
     }
 
     fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        self.inner.lock().expect("editor mutex poisoned").param_value_changed(id, normalized_value);
+        self.inner
+            .lock()
+            .expect("editor mutex poisoned")
+            .param_value_changed(id, normalized_value);
     }
 
     fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
@@ -652,7 +641,10 @@ impl Editor for DizmoEditor {
     }
 
     fn set_scale_factor(&self, factor: f64) -> bool {
-        self.inner.lock().expect("editor mutex poisoned").set_scale_factor(factor)
+        self.inner
+            .lock()
+            .expect("editor mutex poisoned")
+            .set_scale_factor(factor)
     }
 
     fn resize_hint(&self) -> ResizeHint {

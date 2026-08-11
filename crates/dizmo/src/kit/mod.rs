@@ -32,7 +32,7 @@ pub use instrument::{
     AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
 };
 pub use midimap::{MidiMap, MidiMapEntry};
-pub use samples::{DecodedFile, SampleBank, SampleError, load_samples, load_samples_with_progress};
+pub use samples::{DecodedFile, SampleBank, SampleError, load_samples_with_progress};
 
 /// The default sample rate used when a `drumkit.xml` does not declare one.
 pub const DEFAULT_SAMPLERATE: f64 = 44100.0;

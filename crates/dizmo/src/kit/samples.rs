@@ -76,21 +76,6 @@ struct SampleTask {
     channels: Vec<usize>,
 }
 
-/// Decodes and caches every sample referenced by `kit`.
-///
-/// When `target_sample_rate` is set and differs from a file's own sample rate,
-/// every referenced channel is resampled to that rate so the engine can play
-/// back at the host rate 1:1.
-///
-/// Returns the first error encountered (missing file, malformed WAV, or a
-/// `filechannel` outside the file's channel count).
-pub fn load_samples(
-    kit: &DizmoKit,
-    target_sample_rate: Option<u32>,
-) -> Result<SampleBank, SampleError> {
-    load_samples_with_progress(kit, target_sample_rate, &mut |_, _| {})
-}
-
 /// Like [`load_samples`], but reports decoding progress via `progress(loaded, total)`.
 ///
 /// Files are decoded on a worker pool sized to the machine. Errors are still

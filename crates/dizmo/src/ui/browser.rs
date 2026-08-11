@@ -105,8 +105,7 @@ impl Browser {
 /// header row and a scrollable list of entries. `scale` is the uniform UI zoom.
 pub fn view(browser: &Browser, scale: f32) -> iced::widget::Stack<'_, Message> {
     let s = scale;
-    let mut list =
-        column![entry_row("..", true, Message::BrowserUp, s)].spacing(2.0 * s);
+    let mut list = column![entry_row("..", true, Message::BrowserUp, s)].spacing(2.0 * s);
     for (index, entry) in browser.entries().iter().enumerate() {
         list = list.push(entry_row(
             &entry.name,
@@ -136,13 +135,12 @@ pub fn view(browser: &Browser, scale: f32) -> iced::widget::Stack<'_, Message> {
     .align_y(Alignment::Center)
     .spacing(8.0 * s);
 
-    let panel = container(
-        column![header, iced::widget::rule::horizontal(1), list].spacing(8.0 * s),
-    )
-    .width(560.0 * s)
-    .height(400.0 * s)
-    .padding(12.0 * s)
-    .style(panel_style);
+    let panel =
+        container(column![header, iced::widget::rule::horizontal(1), list].spacing(8.0 * s))
+            .width(560.0 * s)
+            .height(400.0 * s)
+            .padding(12.0 * s)
+            .style(panel_style);
 
     let backdrop = mouse_area(container(
         Space::new().width(Length::Fill).height(Length::Fill),

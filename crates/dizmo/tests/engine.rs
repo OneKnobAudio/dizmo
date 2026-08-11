@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dizmo::engine::{Engine, MAX_VOICES, load_engine, load_engine_with_progress};
-use dizmo::kit::{DizmoKit, MidiMap, SampleBank, load_samples};
+use dizmo::kit::{DizmoKit, MidiMap, SampleBank, load_samples_with_progress};
 
 const DRUMKIT: &str = r#"<drumkit version="2.0">
   <metadata>
@@ -103,7 +103,7 @@ fn setup(tag: &str, drumkit: &str, xml: &[(&str, &str)], wavs: &[(&str, u16, &[i
 
 fn load(dir: &Path) -> (Arc<DizmoKit>, Arc<SampleBank>, MidiMap) {
     let kit = Arc::new(DizmoKit::load(dir.join("drumkit.xml")).unwrap());
-    let bank = Arc::new(load_samples(&kit, None).unwrap());
+    let bank = Arc::new(load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap());
     let midimap = kit.load_midimap("midimap.xml").unwrap();
     (kit, bank, midimap)
 }
