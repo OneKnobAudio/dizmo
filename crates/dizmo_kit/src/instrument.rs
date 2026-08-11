@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::format_major;
-use super::xml::{attr, load_document, parse_bool, parse_f32, parse_u32, read_file, required_attr};
-use super::{ChannelMap, Choke, KitError};
+use crate::format_major;
+use crate::xml::{attr, load_document, parse_bool, parse_f32, parse_u32, read_file, required_attr};
+use crate::{ChannelMap, Choke, KitError};
 
 /// A single DrumGizmo instrument, resolved against the kit.
 #[derive(Debug)]
@@ -14,16 +14,16 @@ pub struct Instrument {
     pub description: String,
     /// Instrument format version, e.g. `2.0` or `1.0`.
     pub version: String,
-    /// Index of the instrument in the kit (assigned by [`super::Kit::load`]).
+    /// Index of the instrument in the kit (assigned by [`crate::DizmoKit::load`]).
     pub id: usize,
     /// Directory containing the instrument XML file; sample paths are relative
     /// to this directory.
     pub base_dir: PathBuf,
-    /// Drumkit group, e.g. `hihat` (set by [`super::Kit::load`]).
+    /// Drumkit group, e.g. `hihat` (set by [`crate::DizmoKit::load`]).
     pub group: Option<String>,
-    /// `in` -> `out` channel mapping from the drumkit (set by [`super::Kit::load`]).
+    /// `in` -> `out` channel mapping from the drumkit (set by [`crate::DizmoKit::load`]).
     pub channel_map: Vec<ChannelMap>,
-    /// Instruments cut on trigger (set by [`super::Kit::load`]).
+    /// Instruments cut on trigger (set by [`crate::DizmoKit::load`]).
     pub chokes: Vec<Choke>,
     /// Instrument-level output channels.
     pub channels: Vec<InstrumentChannel>,
@@ -102,7 +102,7 @@ pub fn parse_file(path: &Path) -> Result<Instrument, KitError> {
 
 pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
     let doc = load_document(text, path)?;
-    let instrument = super::xml::root_element(&doc, "instrument", path)?;
+    let instrument = crate::xml::root_element(&doc, "instrument", path)?;
 
     let name = required_attr(&instrument, "name", path)?;
     let version = attr(&instrument, "version").unwrap_or_else(|| "1.0".to_string());

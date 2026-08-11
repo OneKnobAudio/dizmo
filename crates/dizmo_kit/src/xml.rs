@@ -4,7 +4,7 @@ use std::path::Path;
 
 use roxmltree::{Document, Node};
 
-use super::KitError;
+use crate::KitError;
 
 /// Reads an XML file to a string, wrapping IO errors with the file path.
 pub(crate) fn read_file(path: &Path) -> Result<String, KitError> {

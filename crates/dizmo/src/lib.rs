@@ -9,8 +9,13 @@ use crate::engine::{Engine, InstrumentMapping};
 use crate::params::{AUX_OUTPUT_NAMES, AUX_OUTPUT_PORTS, ChannelParams, DizmoParams, NUM_CHANNELS};
 
 pub mod engine;
-pub mod kit;
+/// The DrumGizmo kit-loading machinery, living in its own crate so the
+/// standalone `dizmo_editor` can reuse it.
+pub use dizmo_kit as kit;
 pub mod params;
+/// Sample decoding and resampling, kept separate from kit parsing so the
+/// parsing crate stays I/O-light for the editor.
+pub mod samples;
 mod ui;
 
 /// A kit-load request dispatched from the editor GUI.

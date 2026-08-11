@@ -4,10 +4,10 @@ use std::path::Path;
 
 use roxmltree::Node;
 
-use super::xml::{
+use crate::xml::{
     attr, metadata_attr, metadata_text, parse_bool, parse_f64, parse_u32, read_file, required_attr,
 };
-use super::{ChannelMap, Choke, DEFAULT_CHOKETIME_MS, DEFAULT_SAMPLERATE, KitChannel, KitError};
+use crate::{ChannelMap, Choke, DEFAULT_CHOKETIME_MS, DEFAULT_SAMPLERATE, KitChannel, KitError};
 
 /// The parsed contents of a `drumkit.xml`, before the referenced instrument
 /// files have been loaded.
@@ -39,8 +39,8 @@ pub fn parse_file(path: &Path) -> Result<DrumKit, KitError> {
 }
 
 pub fn parse_str(text: &str, path: &Path) -> Result<DrumKit, KitError> {
-    let doc = super::xml::load_document(text, path)?;
-    let drumkit = super::xml::root_element(&doc, "drumkit", path)?;
+    let doc = crate::xml::load_document(text, path)?;
+    let drumkit = crate::xml::root_element(&doc, "drumkit", path)?;
 
     let version = attr(&drumkit, "version").unwrap_or_else(|| "1.0".to_string());
     let samplerate = match attr(&drumkit, "samplerate") {

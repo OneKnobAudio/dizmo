@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use super::KitError;
-use super::xml::{load_document, parse_note, read_file, required_attr};
+use crate::xml::{load_document, parse_note, read_file, required_attr};
+use crate::KitError;
 
 /// A parsed `midimap.xml`.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -35,7 +35,7 @@ pub fn parse_file(path: &Path) -> Result<MidiMap, KitError> {
 
 pub fn parse_str(text: &str, path: &Path) -> Result<MidiMap, KitError> {
     let doc = load_document(text, path)?;
-    let midimap = super::xml::root_element(&doc, "midimap", path)?;
+    let midimap = crate::xml::root_element(&doc, "midimap", path)?;
 
     let entries = midimap
         .children()

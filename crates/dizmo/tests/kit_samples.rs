@@ -1,4 +1,5 @@
-use dizmo::kit::{DizmoKit, SampleError, load_samples_with_progress};
+use dizmo::kit::DizmoKit;
+use dizmo::samples::{SampleError, load_samples_with_progress};
 use std::fs;
 use std::path::{Path, PathBuf};
 

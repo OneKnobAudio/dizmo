@@ -1,4 +1,4 @@
-use dizmo::kit::{Choke, DizmoKit, KitError, MidiMap};
+use dizmo_kit::{Choke, DizmoKit, KitError, MidiMap};
 use std::path::Path;
 
 fn fixture_dir() -> &'static Path {

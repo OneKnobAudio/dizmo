@@ -8,10 +8,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::kit::{
-    DizmoKit, KitError, MidiMap, SampleBank, SampleError, load_samples_with_progress,
-};
+use crate::kit::{DizmoKit, KitError, MidiMap};
 use crate::params::NUM_CHANNELS;
+use crate::samples::{SampleBank, SampleError, load_samples_with_progress};
 
 /// Maximum number of simultaneously playing voices; the oldest is faded out
 /// first when exceeded.

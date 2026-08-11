@@ -1084,12 +1084,12 @@ version = "0.1.0"
 dependencies = [
  "ardftsrc",
  "crossbeam-channel",
+ "dizmo_kit",
  "hound",
  "iced_audio",
  "iced_futures",
  "nice-plug",
  "nice-plug-iced",
- "roxmltree 0.20.0",
  "thiserror 2.0.19",
 ]
 
@@ -1097,10 +1097,19 @@ dependencies = [
 name = "dizmo_editor"
 version = "0.1.0"
 dependencies = [
+ "dizmo_kit",
  "iced",
  "rfd",
  "rodio",
  "roxmltree 0.21.1",
+]
+
+[[package]]
+name = "dizmo_kit"
+version = "0.1.0"
+dependencies = [
+ "roxmltree 0.20.0",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

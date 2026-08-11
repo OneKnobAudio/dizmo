@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dizmo_kit = { path = "../dizmo_kit" }
 nice-plug = "0.2.3"
 # `smol` enables iced's `time::every` subscription, which drives the trigger
 # blink and level LED animations; the `canvas` feature is required for the
@@ -14,7 +15,6 @@ iced_audio = { version = "0.15.0", features = ["nice-plug"] }
 # ticker that drives the trigger blink and level LED animations. The `smol`
 # feature is enabled transitively via nice-plug-iced above.
 iced_futures = "0.14"
-roxmltree = "0.20"
 thiserror = "2"
 hound = "3.5"
 crossbeam-channel = "0.5"

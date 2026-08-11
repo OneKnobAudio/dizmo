@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dizmo::engine::{Engine, MAX_VOICES, load_engine, load_engine_with_progress};
-use dizmo::kit::{DizmoKit, MidiMap, SampleBank, load_samples_with_progress};
+use dizmo::kit::{DizmoKit, MidiMap};
+use dizmo::samples::{SampleBank, load_samples_with_progress};
 
 const DRUMKIT: &str = r#"<drumkit version="2.0">
   <metadata>

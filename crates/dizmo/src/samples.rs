@@ -1,10 +1,10 @@
-//! Sample loading: decodes the WAV files referenced by a loaded [`Kit`] into
-//! immutable mono buffers the engine can read.
+//! Sample loading: decodes the WAV files referenced by a loaded
+//! [`crate::kit::DizmoKit`] into immutable mono buffers the engine can read.
 //!
-//! Loading happens off the audio thread (`Kit::load` -> `load_samples`); the
-//! resulting [`SampleBank`] is read-only and shared with the engine. Files are
-//! decoded in parallel, and only the channels that samples actually reference
-//! are decoded and resampled.
+//! Loading happens off the audio thread (`DizmoKit::load` ->
+//! `load_samples_with_progress`); the resulting [`SampleBank`] is read-only
+//! and shared with the engine. Files are decoded in parallel, and only the
+//! channels that samples actually reference are decoded and resampled.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use std::sync::{Arc, mpsc};
 
 use ardftsrc::{PRESET_GOOD, PlanarResampler};
 
-use super::{AudioFile, DizmoKit};
+use crate::kit::{AudioFile, DizmoKit};
 
 /// A fully decoded WAV file, split into one mono buffer per channel.
 #[derive(Debug)]

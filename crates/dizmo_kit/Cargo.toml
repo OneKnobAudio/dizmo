@@ -1,0 +1,8 @@
+[package]
+name = "dizmo_kit"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+roxmltree = "0.20"
+thiserror = "2"
