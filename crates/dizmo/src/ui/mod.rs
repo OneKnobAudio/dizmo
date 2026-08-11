@@ -768,8 +768,8 @@ impl Editor for DizmoEditor {
             can_resize_horizontally: false,
             can_resize_vertically: false,
             preserve_aspect_ratio: true,
-            aspect_ratio_width: 3,
-            aspect_ratio_height: 2,
+            aspect_ratio_width: 4,
+            aspect_ratio_height: 3,
         }
     }
 }
