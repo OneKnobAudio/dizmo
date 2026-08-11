@@ -24,7 +24,7 @@ pub struct DrumKit {
 }
 
 /// A reference to an instrument inside the drumkit's `<instruments>` node.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InstrumentRef {
     pub name: String,
     /// Path of the instrument XML file, relative to the `drumkit.xml`.

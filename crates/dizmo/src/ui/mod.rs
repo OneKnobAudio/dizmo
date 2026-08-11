@@ -8,7 +8,7 @@ use nice_plug::prelude::*;
 use nice_plug_iced::iced::core::border::Radius;
 use nice_plug_iced::iced::widget::scrollable::{Direction, Scrollbar};
 use nice_plug_iced::iced::widget::{
-    Button, Space, button, column, container, mouse_area, row, scrollable, text,
+    Button, Space, button, column, container, mouse_area, pick_list, row, scrollable, text,
 };
 use nice_plug_iced::iced::{
     self, Alignment, Background, Border, Color, Element, Length, PollSubNotifier,
@@ -62,6 +62,74 @@ const HEADER_HEIGHT: f32 = 42.0;
 
 /// The default editor window size in logical pixels.
 const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(1240.0, 560.0);
+
+/// The fixed UI zoom levels selectable from the header dropdown. Selecting one
+/// scales the whole UI to `WINDOW_SIZE × factor` and asks the host to resize
+/// the plugin window to match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zoom {
+    Percent75,
+    Percent100,
+    Percent120,
+    Percent150,
+}
+
+impl Zoom {
+    /// All zoom levels in ascending order (the dropdown order).
+    const ALL: [Zoom; 4] = [
+        Zoom::Percent75,
+        Zoom::Percent100,
+        Zoom::Percent120,
+        Zoom::Percent150,
+    ];
+
+    /// The UI scale factor for this level.
+    fn factor(self) -> f32 {
+        match self {
+            Zoom::Percent75 => 0.75,
+            Zoom::Percent100 => 1.0,
+            Zoom::Percent120 => 1.2,
+            Zoom::Percent150 => 1.5,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Zoom::Percent75 => "75%",
+            Zoom::Percent100 => "100%",
+            Zoom::Percent120 => "120%",
+            Zoom::Percent150 => "150%",
+        }
+    }
+
+    /// The logical window size for this level.
+    fn window_size(self) -> LogicalSize<f32> {
+        LogicalSize::new(
+            WINDOW_SIZE.width * self.factor(),
+            WINDOW_SIZE.height * self.factor(),
+        )
+    }
+
+    /// Snaps a logical window size to the nearest zoom level.
+    fn from_size(size: iced::Size) -> Self {
+        let factor = size.width / WINDOW_SIZE.width;
+        Self::ALL
+            .into_iter()
+            .min_by(|a, b| {
+                (a.factor() - factor)
+                    .abs()
+                    .partial_cmp(&(b.factor() - factor).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("the zoom level list is never empty")
+    }
+}
+
+impl std::fmt::Display for Zoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
 
 /// How often the ticker fires, driving the meter and LED animations.
 const TICK_INTERVAL: Duration = Duration::from_millis(40);
@@ -144,6 +212,8 @@ pub enum Message {
     Tick,
     /// The host resized the editor view; carries the new logical size.
     Resized(iced::Size),
+    /// The user picked a zoom level from the header dropdown.
+    SetZoom(Zoom),
     /// The audio thread set a param or lit an indicator; poll for new state.
     Poll,
     FaderGesture(usize, Gesture),
@@ -182,6 +252,8 @@ pub struct DizmoGui {
     /// The current logical window size, driven by host resize events. Used to
     /// compute the uniform UI zoom; see [`DizmoGui::scale`].
     pub ui_size: iced::Size,
+    /// The selected zoom level from the header dropdown.
+    pub zoom: Zoom,
 }
 
 impl DizmoGui {
@@ -200,6 +272,16 @@ impl DizmoGui {
             },
             None => LoadStatus::Idle,
         };
+        // The persisted window size determines the initial zoom. If it does not
+        // land on one of the fixed levels (e.g. a leftover size from the old
+        // freely-resizable era), normalize it to the nearest level; the UI is
+        // seeded from the actual size either way, so it fits before the host
+        // processes the normalization request.
+        let window_size = nice_ctx.size();
+        let zoom = Zoom::from_size(iced::Size::new(window_size.width, window_size.height));
+        if zoom.window_size() != window_size {
+            nice_ctx.request_resize(zoom.window_size());
+        }
         Self {
             editor_state,
             nice_ctx,
@@ -209,7 +291,8 @@ impl DizmoGui {
             show_warning: None,
             browser: browser::Browser::new(),
             peak_hold: [0.0; NUM_CHANNELS],
-            ui_size: iced::Size::new(WINDOW_SIZE.width, WINDOW_SIZE.height),
+            ui_size: iced::Size::new(window_size.width, window_size.height),
+            zoom,
         }
     }
 
@@ -228,6 +311,27 @@ impl DizmoGui {
                     size.height,
                     self.scale()
                 );
+            }
+            Message::SetZoom(zoom) => {
+                if zoom == self.zoom {
+                    return;
+                }
+                self.zoom = zoom;
+                let target = zoom.window_size();
+                self.ui_size = iced::Size::new(target.width, target.height);
+                self.nice_ctx.request_resize(target);
+                // If the host rejected the request, `nice_ctx.size()` keeps
+                // the actual size; fall back to it so the UI still fits the
+                // window it got.
+                let actual = self.nice_ctx.size();
+                if actual != target {
+                    self.ui_size = iced::Size::new(actual.width, actual.height);
+                    self.zoom = Zoom::from_size(iced::Size::new(actual.width, actual.height));
+                    eprintln!(
+                        "[dizmo] host rejected resize to {:.0} x {:.0}, staying at {:.0} x {:.0} ({})",
+                        target.width, target.height, actual.width, actual.height, self.zoom
+                    );
+                }
             }
             Message::Poll => self.poll_status(),
             Message::FaderGesture(channel, gesture) => {
@@ -389,6 +493,7 @@ impl DizmoGui {
         .padding([0.0, 20.0 * s]);
 
         header_row = header_row.push(self.mappings_button());
+        header_row = header_row.push(self.zoom_dropdown());
         header_row = header_row.push(Space::new().width(Length::Fill));
 
         let (label, color) = match &self.load_status {
@@ -430,6 +535,18 @@ impl DizmoGui {
             .on_press(Message::OpenBrowser)
             .width(Length::Fixed(92.0 * s))
             .style(load_kit_button_style)
+    }
+
+    /// The zoom dropdown: picks a fixed UI scale and requests the matching
+    /// window size from the host.
+    fn zoom_dropdown(&self) -> Element<'_, Message> {
+        let s = self.scale();
+        pick_list(Zoom::ALL, Some(self.zoom), Message::SetZoom)
+            .width(Length::Fixed(84.0 * s))
+            .text_size(9.0 * s)
+            .style(zoom_picker_style)
+            .menu_style(zoom_menu_style)
+            .into()
     }
 }
 
@@ -648,10 +765,14 @@ impl Editor for DizmoEditor {
     }
 
     fn resize_hint(&self) -> ResizeHint {
+        // The view is not host-resizable: its size is set only through the
+        // zoom dropdown, which requests a fixed `WINDOW_SIZE × zoom` from the
+        // host. `can_resize: false` removes the host's drag affordance; our
+        // own `request_resize` calls keep working regardless.
         ResizeHint {
-            can_resize: true,
-            can_resize_horizontally: true,
-            can_resize_vertically: true,
+            can_resize: false,
+            can_resize_horizontally: false,
+            can_resize_vertically: false,
             preserve_aspect_ratio: true,
             aspect_ratio_width: 3,
             aspect_ratio_height: 2,
@@ -749,6 +870,55 @@ fn load_kit_button_style(
             radius: Radius::from(4.0),
         },
         ..Default::default()
+    }
+}
+
+/// The zoom dropdown's closed-field style, matching the header buttons.
+fn zoom_picker_style(
+    _theme: &iced::Theme,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
+    let active = iced::widget::pick_list::Style {
+        text_color: TEXT,
+        placeholder_color: TEXT_DIM,
+        handle_color: TEXT_DIM,
+        background: Background::Color(FIELD_BG),
+        border: Border {
+            color: FIELD_BORDER,
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+    };
+    match status {
+        iced::widget::pick_list::Status::Active => active,
+        iced::widget::pick_list::Status::Hovered
+        | iced::widget::pick_list::Status::Opened { .. } => iced::widget::pick_list::Style {
+            border: Border {
+                color: ACCENT,
+                ..active.border
+            },
+            ..active
+        },
+    }
+}
+
+/// The zoom dropdown's open menu style, matching the modal dialogs.
+fn zoom_menu_style(_theme: &iced::Theme) -> iced::widget::overlay::menu::Style {
+    iced::widget::overlay::menu::Style {
+        background: Background::Color(CARD_BG),
+        border: Border {
+            color: CARD_BORDER,
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        text_color: TEXT,
+        selected_text_color: TEXT,
+        selected_background: Background::Color(FIELD_BG),
+        shadow: iced::Shadow {
+            color: Color::from_rgba8(0, 0, 0, 0.4),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
+        },
     }
 }
 

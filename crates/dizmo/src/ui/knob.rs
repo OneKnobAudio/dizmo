@@ -22,7 +22,11 @@ pub fn show_knob<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<'
 
     let knob = GestureDrag::new(knob, move |gesture| Message::PanGesture(channel, gesture))
         .value(normal_param.normal.as_f32())
-        .default(normal_param.default.as_f32());
+        .default(normal_param.default.as_f32())
+        // Scale the pixel->value mapping by the UI zoom so a drag spans the
+        // same relative range at every zoom level.
+        .drag_scalar(0.0025 / s)
+        .wheel_scalar(0.01 / s);
 
     let readout = crate::params::v2s_f32_pan()(pan.value());
 

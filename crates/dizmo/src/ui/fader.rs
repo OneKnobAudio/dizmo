@@ -47,7 +47,10 @@ pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<
     let fader = &state.editor_state.params.channels[channel].fader;
     let level = f32::from_bits(state.editor_state.levels[channel].load(Ordering::Relaxed));
     let config = Config {
-        drag_scalar: 0.0025,
+        // Scale the pixel->value mapping by the UI zoom so a drag spans the
+        // same relative range at every zoom level.
+        drag_scalar: 0.0025 / s,
+        wheel_scalar: 0.01 / s,
         ..Default::default()
     };
     let normal_param = NormalParam::from_nice(fader);
@@ -63,7 +66,8 @@ pub fn show_fader<'a>(state: &'a crate::ui::DizmoGui, channel: usize) -> Column<
     })
     .value(normal_param.normal.as_f32())
     .default(normal_param.default.as_f32())
-    .drag_scalar(config.drag_scalar);
+    .drag_scalar(config.drag_scalar)
+    .wheel_scalar(config.wheel_scalar);
 
     column![
         signal_led(level, s),
