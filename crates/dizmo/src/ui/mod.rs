@@ -219,7 +219,16 @@ impl DizmoGui {
                 self.decay_peak_hold();
                 self.poll_status();
             }
-            Message::Resized(size) => self.ui_size = size,
+            Message::Resized(size) => {
+                self.ui_size = size;
+
+                eprintln!(
+                    "RESIZED: {} x {}, scale = {}",
+                    size.width,
+                    size.height,
+                    self.scale()
+                );
+            }
             Message::Poll => self.poll_status(),
             Message::FaderGesture(channel, gesture) => {
                 let param = &self.editor_state.params.channels[channel].fader;
@@ -334,8 +343,11 @@ impl DizmoGui {
         let base: Element<'_, Message> = base.into();
 
         if self.browser.is_open() {
-            return iced::widget::Stack::with_children([base, browser::view(&self.browser, scale).into()])
-                .into();
+            return iced::widget::Stack::with_children([
+                base,
+                browser::view(&self.browser, scale).into(),
+            ])
+            .into();
         }
         if self.show_mappings {
             return iced::widget::Stack::with_children([base, mappings_dialog(self).into()]).into();
@@ -350,8 +362,13 @@ impl DizmoGui {
         if let Some(message) = &self.show_warning {
             return iced::widget::Stack::with_children([
                 base,
-                modal_dialog("Kit loaded with warnings", message, Message::DismissWarning, scale)
-                    .into(),
+                modal_dialog(
+                    "Kit loaded with warnings",
+                    message,
+                    Message::DismissWarning,
+                    scale,
+                )
+                .into(),
             ])
             .into();
         }
@@ -552,13 +569,13 @@ impl Editor for DizmoEditor {
     }
 
     fn resize_hint(&self) -> ResizeHint {
-        // Advertise free host resizing: this drives VST3's `canResize` and
-        // CLAP's `gui.can_resize` / `gui.get_resize_hints`.
         ResizeHint {
             can_resize: true,
             can_resize_horizontally: true,
             can_resize_vertically: true,
-            ..Default::default()
+            preserve_aspect_ratio: true,
+            aspect_ratio_width: 3,
+            aspect_ratio_height: 2,
         }
     }
 }
