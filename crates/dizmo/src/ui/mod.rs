@@ -210,8 +210,6 @@ pub enum LoadStatus {
 pub enum Message {
     /// A tick from the 40 ms timer, driving the meter and LED animations.
     Tick,
-    /// The host resized the editor view; carries the new logical size.
-    Resized(iced::Size),
     /// The user picked a zoom level from the header dropdown.
     SetZoom(Zoom),
     /// The audio thread set a param or lit an indicator; poll for new state.
@@ -302,20 +300,17 @@ impl DizmoGui {
                 self.decay_peak_hold();
                 self.poll_status();
             }
-            Message::Resized(size) => {
-                self.ui_size = size;
-
-                eprintln!(
-                    "RESIZED: {} x {}, scale = {}",
-                    size.width,
-                    size.height,
-                    self.scale()
-                );
-            }
             Message::SetZoom(zoom) => {
                 if zoom == self.zoom {
                     return;
                 }
+                eprintln!(
+                    "[dizmo] trying to zoom from {:.0} x {:.0} to {:.0} x {:.0}",
+                    self.nice_ctx.size().height,
+                    self.nice_ctx.size().width,
+                    zoom.window_size().height,
+                    zoom.window_size().width
+                );
                 self.zoom = zoom;
                 let target = zoom.window_size();
                 self.ui_size = iced::Size::new(target.width, target.height);
@@ -667,7 +662,6 @@ impl DizmoEditor {
                     iced::Subscription::batch([
                         every(TICK_INTERVAL).map(|_| Message::Tick),
                         iced::poll_events().map(|()| Message::Poll),
-                        iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
                     ])
                 })
                 .run()
