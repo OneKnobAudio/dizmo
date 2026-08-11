@@ -1,0 +1,10 @@
+[package]
+name = "dizmo_editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iced = "0.14.0"
+rfd = "0.17.2"
+rodio = "0.22.2"
+roxmltree = "0.21.1"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dizmo", "crates/xtask"]
+members = ["crates/dizmo", "crates/dizmo_editor", "crates/xtask"]
 resolver = "3"
 
 [workspace.package]
