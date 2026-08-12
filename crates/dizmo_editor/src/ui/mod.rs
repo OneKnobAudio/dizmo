@@ -2,15 +2,17 @@
 
 pub mod modal;
 pub mod panels;
+pub mod preview;
 pub mod sidebar;
 pub mod theme;
 
 use std::path::PathBuf;
 
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
 use iced::{Element, Length, Task};
 use rfd::AsyncFileDialog;
 
+use crate::audio::PreviewPlayer;
 use crate::model::load::load;
 use crate::model::EditorKit;
 
@@ -56,6 +58,8 @@ pub enum Message {
     SamplePower(usize, usize, f32),
     SampleNormalized(usize, usize, bool),
     Preview(usize, usize),
+    StopPreview,
+    PreviewVolume(f32),
     MidimapNote(String),
     MidimapAdd,
     MidimapAssign(usize, Option<usize>),
@@ -70,6 +74,9 @@ pub struct App {
     status: Option<String>,
     midimap_note: String,
     samplerate_text: String,
+    player: PreviewPlayer,
+    previewing: Option<(usize, usize)>,
+    preview_volume: f32,
 }
 
 impl App {
@@ -81,6 +88,9 @@ impl App {
             status: None,
             midimap_note: String::new(),
             samplerate_text: DEFAULT_SAMPLERATE.to_string(),
+            player: PreviewPlayer::spawn(),
+            previewing: None,
+            preview_volume: 1.0,
         }
     }
 
@@ -132,6 +142,7 @@ impl App {
                 self.selection = Selection::Kit;
                 self.modal = None;
                 self.status = None;
+                self.stop_preview();
             }
             Message::NewKitCancel => self.modal = None,
             Message::KitOpened(Some(file)) => {
@@ -157,6 +168,7 @@ impl App {
                     self.selection = Selection::Kit;
                     self.modal = None;
                     self.status = Some(status);
+                    self.stop_preview();
                 }
                 Err(error) => {
                     self.status = Some(format!("Could not load kit: {error}"));
@@ -177,7 +189,18 @@ impl App {
                 }
             }
             Message::SaveAsPicked(None) => {}
-            Message::Select(selection) => self.selection = selection,
+            Message::Select(selection) => {
+                if let Some((previewing_instrument, previewing_sample)) = self.previewing {
+                    let staying = matches!(
+                        selection,
+                        Selection::Sample(i, s) if i == previewing_instrument && s == previewing_sample
+                    );
+                    if !staying {
+                        self.stop_preview();
+                    }
+                }
+                self.selection = selection;
+            }
             Message::KitName(name) => {
                 if let Some(kit) = &mut self.kit
                     && kit.drumkit.name != name
@@ -231,6 +254,7 @@ impl App {
                 if let Some(kit) = &mut self.kit {
                     kit.remove_instrument(i);
                 }
+                self.stop_preview();
                 self.selection = Selection::Kit;
             }
             Message::RenameInstrument(i, name) => {
@@ -255,6 +279,7 @@ impl App {
                 if let Some(kit) = &mut self.kit {
                     kit.remove_sample(i, s);
                 }
+                self.stop_preview();
                 self.selection = Selection::Instrument(i);
             }
             Message::RenameSample(i, s, name) => {
@@ -277,18 +302,31 @@ impl App {
                 }
             }
             Message::Preview(instrument, sample) => {
-                let name = self
-                    .kit
-                    .as_ref()
-                    .and_then(|kit| kit.instruments.get(instrument))
-                    .and_then(|inst| inst.instrument.samples.get(sample))
-                    .map(|s| s.name.clone());
-                self.status = Some(match name {
-                    Some(name) => {
-                        format!("Previewing {name} — sample preview lands in Phase 4 (rodio).")
-                    }
-                    None => "Sample preview lands in Phase 4 (rodio).".into(),
-                });
+                let Some(kit) = &self.kit else {
+                    return Task::none();
+                };
+                let Some(inst) = kit.instruments.get(instrument) else {
+                    return Task::none();
+                };
+                let Some(sample_ref) = inst.instrument.samples.get(sample) else {
+                    return Task::none();
+                };
+                let Some(audio_file) = sample_ref.audio_files.first() else {
+                    self.status = Some("This sample has no audio files to preview.".into());
+                    return Task::none();
+                };
+                let path = inst.instrument.base_dir.join(&audio_file.file);
+                self.player.play(&path, audio_file.file_channel, self.preview_volume);
+                self.previewing = Some((instrument, sample));
+                self.status = Some(format!("Previewing '{}'.", sample_ref.name));
+            }
+            Message::StopPreview => {
+                self.stop_preview();
+                self.status = Some("Preview stopped.".into());
+            }
+            Message::PreviewVolume(volume) => {
+                self.preview_volume = volume;
+                self.player.set_volume(volume);
             }
             Message::MidimapNote(note) => self.midimap_note = note,
             Message::MidimapAdd => {
@@ -320,6 +358,11 @@ impl App {
             Message::DismissStatus => self.status = None,
         }
         Task::none()
+    }
+
+    fn stop_preview(&mut self) {
+        self.player.stop();
+        self.previewing = None;
     }
 
     fn pick_save_dir(&self) -> Task<Message> {
@@ -409,7 +452,8 @@ impl App {
             Selection::Sample(i, s)
                 if i < kit.instruments.len() && s < kit.instruments[i].instrument.samples.len() =>
             {
-                panels::sample_panel(kit, i, s)
+                let playing = self.previewing == Some((i, s));
+                panels::sample_panel(kit, i, s, playing, self.preview_volume)
             }
             Selection::Midimap => panels::midimap_panel(kit, &self.midimap_note),
             _ => panels::kit_panel(kit, &self.samplerate_text),

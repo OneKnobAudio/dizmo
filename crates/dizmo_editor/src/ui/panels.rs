@@ -9,6 +9,7 @@ use super::theme::{
     danger_button_style, menu_style, pill, pick_list_style, pill_button_style, text_input_style,
     TEXT, TEXT_DIM,
 };
+use super::preview;
 use super::{Message, Selection};
 use crate::model::EditorKit;
 
@@ -175,7 +176,13 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
     .into()
 }
 
-pub fn sample_panel<'a>(kit: &'a EditorKit, instrument: usize, sample_idx: usize) -> Element<'a, Message> {
+pub fn sample_panel<'a>(
+    kit: &'a EditorKit,
+    instrument: usize,
+    sample_idx: usize,
+    previewing: bool,
+    preview_volume: f32,
+) -> Element<'a, Message> {
     let sample = &kit.instruments[instrument].instrument.samples[sample_idx];
 
     let mut audio_files = column![].spacing(2);
@@ -224,9 +231,16 @@ pub fn sample_panel<'a>(kit: &'a EditorKit, instrument: usize, sample_idx: usize
         iced::widget::rule::horizontal(1.0),
         text("Audio files").size(12).color(TEXT),
         audio_files,
-        button(text("▶ Preview"))
-            .on_press(Message::Preview(instrument, sample_idx))
-            .style(pill(false)),
+        preview::preview_controls(
+            previewing,
+            preview_volume,
+            if previewing {
+                Message::StopPreview
+            } else {
+                Message::Preview(instrument, sample_idx)
+            },
+            Message::PreviewVolume,
+        ),
         button(text("Remove sample"))
             .on_press(Message::RemoveSample(instrument, sample_idx))
             .style(danger_button_style),
