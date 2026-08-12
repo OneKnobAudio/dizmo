@@ -121,15 +121,19 @@ impl Engine {
             .enumerate()
             .map(|(index, instrument)| (instrument.name.clone(), index))
             .collect();
-        let (power_min, power_max) = kit.instruments.iter().map(|instrument| {
-            let mut min = f32::INFINITY;
-            let mut max = f32::NEG_INFINITY;
-            for sample in &instrument.samples {
-                min = min.min(sample.power);
-                max = max.max(sample.power);
-            }
-            (min, max)
-        }).unzip();
+        let (power_min, power_max) = kit
+            .instruments
+            .iter()
+            .map(|instrument| {
+                let mut min = f32::INFINITY;
+                let mut max = f32::NEG_INFINITY;
+                for sample in &instrument.samples {
+                    min = min.min(sample.power);
+                    max = max.max(sample.power);
+                }
+                (min, max)
+            })
+            .unzip();
         let last_v2_sample = vec![None; kit.instruments.len()];
 
         Self {

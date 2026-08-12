@@ -1,10 +1,5 @@
-//! In-memory, editable kit model.
-//!
-//! The UI only talks to this module. File I/O (load/save round-trip) lands in
-//! Phase 1 / Phase 3 of EDITOR_PLAN.md; the new-kit constructors below are
-//! implemented so the skeleton UI is fully usable end to end.
-
 use std::path::PathBuf;
+pub mod load;
 
 use dizmo_kit::drumkit::InstrumentRef;
 use dizmo_kit::{
@@ -63,7 +58,11 @@ impl EditorKit {
     }
 
     pub fn channel_names(&self) -> Vec<String> {
-        self.drumkit.channels.iter().map(|c| c.name.clone()).collect()
+        self.drumkit
+            .channels
+            .iter()
+            .map(|c| c.name.clone())
+            .collect()
     }
 
     /// Workflow step 2: add a new, unassigned instrument.
