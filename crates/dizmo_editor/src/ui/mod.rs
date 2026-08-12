@@ -14,6 +14,7 @@ use rfd::AsyncFileDialog;
 
 use crate::audio::PreviewPlayer;
 use crate::model::load::load;
+use crate::model::save::save;
 use crate::model::EditorKit;
 
 use modal::{Modal, ModalMessage, NewKitDraft};
@@ -41,6 +42,7 @@ pub enum Message {
     Save,
     SaveAs,
     SaveAsPicked(Option<PathBuf>),
+    Saved(Box<Result<EditorKit, String>>),
     Select(Selection),
     KitName(String),
     KitDescription(String),
@@ -51,7 +53,10 @@ pub enum Message {
     AddInstrument,
     RemoveInstrument(usize),
     RenameInstrument(usize, String),
-    AssignChannel(usize, Option<usize>),
+    AssignChannel(usize, usize, Option<usize>),
+    AssignChannelMain(usize, usize, bool),
+    AddInstrumentChannel(usize),
+    RemoveInstrumentChannel(usize, usize),
     AddSample(usize),
     RemoveSample(usize, usize),
     RenameSample(usize, usize, String),
@@ -174,21 +179,27 @@ impl App {
                     self.status = Some(format!("Could not load kit: {error}"));
                 }
             },
-            Message::Save => {
-                if self.kit.as_ref().is_none_or(|kit| kit.root_dir.is_none()) {
-                    return self.pick_save_dir();
-                }
-                self.status = Some("Saving kit files lands in Phase 3.".into());
-            }
+            Message::Save => return self.start_save(),
             Message::SaveAs => return self.pick_save_dir(),
             Message::SaveAsPicked(Some(dir)) => {
                 if let Some(kit) = &mut self.kit {
                     kit.root_dir = Some(dir);
-                    self.status =
-                        Some("Save-as directory set — writing kit files lands in Phase 3.".into());
                 }
+                return self.start_save();
             }
             Message::SaveAsPicked(None) => {}
+            Message::Saved(result) => match *result {
+                Ok(kit) => {
+                    self.samplerate_text = kit.drumkit.samplerate.to_string();
+                    let name = kit.drumkit.name.clone();
+                    self.kit = Some(kit);
+                    self.stop_preview();
+                    self.status = Some(format!("Saved kit '{}'.", name));
+                }
+                Err(error) => {
+                    self.status = Some(format!("Could not save kit: {error}"));
+                }
+            },
             Message::Select(selection) => {
                 if let Some((previewing_instrument, previewing_sample)) = self.previewing {
                     let staying = matches!(
@@ -262,9 +273,27 @@ impl App {
                     kit.rename_instrument(i, &name);
                 }
             }
-            Message::AssignChannel(i, channel) => {
+            Message::AssignChannel(i, channel, out) => {
                 if let Some(kit) = &mut self.kit {
-                    kit.assign_channel(i, channel);
+                    kit.set_channel_out(i, channel, out);
+                }
+            }
+            Message::AssignChannelMain(i, channel, is_main) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.set_channel_main(i, channel, is_main);
+                }
+            }
+            Message::AddInstrumentChannel(i) => {
+                if let Some(kit) = &mut self.kit
+                    && let Some(inst) = kit.instruments.get(i)
+                {
+                    let n = inst.instrument.channels.len();
+                    kit.add_instrument_channel(i, &format!("Channel {}", n + 1));
+                }
+            }
+            Message::RemoveInstrumentChannel(i, channel) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.remove_instrument_channel(i, channel);
                 }
             }
             Message::AddSample(i) => {
@@ -363,6 +392,22 @@ impl App {
     fn stop_preview(&mut self) {
         self.player.stop();
         self.previewing = None;
+    }
+
+    /// Runs a save on a cloned kit off the UI thread; on success the mutated
+    /// (normalized) kit replaces the live one.
+    fn start_save(&self) -> Task<Message> {
+        let Some(kit) = &self.kit else {
+            return Task::none();
+        };
+        if kit.root_dir.is_none() {
+            return self.pick_save_dir();
+        }
+        let mut kit = kit.clone();
+        Task::perform(
+            async move { save(&mut kit).map(|()| kit) },
+            |result| Message::Saved(Box::new(result)),
+        )
     }
 
     fn pick_save_dir(&self) -> Task<Message> {

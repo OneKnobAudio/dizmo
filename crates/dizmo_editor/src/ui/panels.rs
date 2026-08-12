@@ -97,37 +97,66 @@ pub fn kit_panel<'a>(kit: &'a EditorKit, samplerate_text: &'a str) -> Element<'a
 pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Message> {
     let inst = &kit.instruments[index];
 
-    let channel_options: Vec<String> = {
-        let mut options = vec!["Unassigned".to_string()];
-        options.extend(kit.channel_names());
-        options
-    };
-    let current = inst
-        .reference
-        .channel_map
-        .iter()
-        .find(|m| m.is_main)
-        .map(|m| m.out_name.clone())
-        .unwrap_or_else(|| "Unassigned".to_string());
-    let assign = pick_list(
-        channel_options.clone(),
-        Some(current),
-        move |picked: String| {
-            let channel = if picked == "Unassigned" {
-                None
-            } else {
-                channel_options
-                    .iter()
-                    .position(|option| option == &picked)
-                    .and_then(|position| position.checked_sub(1))
-            };
-            Message::AssignChannel(index, channel)
-        },
-    )
-    .placeholder("Unassigned")
-    .style(pick_list_style)
-    .menu_style(menu_style)
-    .width(Length::Fill);
+    let kit_channels = kit.channel_names();
+    let mut channel_map = column![].spacing(4);
+    for (ci, ch) in inst.instrument.channels.iter().enumerate() {
+        let options: Vec<String> = {
+            let mut options = vec!["Unassigned".to_string()];
+            options.extend(kit_channels.clone());
+            options
+        };
+        let map = inst.reference.channel_map.iter().find(|m| m.in_name == ch.name);
+        let current = map
+            .map(|m| m.out_name.clone())
+            .unwrap_or_else(|| "Unassigned".to_string());
+        let out = pick_list(
+            options.clone(),
+            Some(current),
+            move |picked: String| {
+                let out = if picked == "Unassigned" {
+                    None
+                } else {
+                    options
+                        .iter()
+                        .position(|option| option == &picked)
+                        .and_then(|position| position.checked_sub(1))
+                };
+                Message::AssignChannel(index, ci, out)
+            },
+        )
+        .placeholder("Unassigned")
+        .style(pick_list_style)
+        .menu_style(menu_style)
+        .width(Length::Fill);
+        let is_main = map.map(|m| m.is_main).unwrap_or(false);
+        let main = checkbox(is_main)
+            .label("main")
+            .on_toggle(move |checked| Message::AssignChannelMain(index, ci, checked));
+        channel_map = channel_map.push(
+            row![
+                text(&ch.name).size(11).color(TEXT).width(Length::Fixed(110.0)),
+                out,
+                main,
+                button(text("×"))
+                    .on_press(Message::RemoveInstrumentChannel(index, ci))
+                    .style(danger_button_style),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    if inst.instrument.channels.is_empty() {
+        channel_map = channel_map.push(
+            text("No channels yet — add one to route this instrument to an output.")
+                .size(11)
+                .color(TEXT_DIM),
+        );
+    }
+    channel_map = channel_map.push(
+        button(text("+ Add channel"))
+            .on_press(Message::AddInstrumentChannel(index))
+            .style(pill(false)),
+    );
 
     let mut samples = column![].spacing(4);
     if inst.instrument.samples.is_empty() {
@@ -157,8 +186,8 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
             move |name| Message::RenameInstrument(index, name),
         ),
         column![
-            text("Assigned to channel  ·  workflow step 4").size(11).color(TEXT_DIM),
-            assign,
+            text("Channel map  ·  workflow step 4").size(11).color(TEXT_DIM),
+            channel_map,
         ]
         .spacing(4),
         iced::widget::rule::horizontal(1.0),

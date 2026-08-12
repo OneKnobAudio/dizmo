@@ -137,24 +137,82 @@ impl EditorKit {
         self.dirty = true;
     }
 
-    /// Workflow step 4: assign the instrument to a kit channel.
-    pub fn assign_channel(&mut self, index: usize, channel: Option<usize>) {
-        let Some(inst) = self.instruments.get_mut(index) else {
+    /// Workflow step 4: route an instrument channel to a kit output channel.
+    /// An instrument can have several channels mapped (each with its own `out`
+    /// and `main` flag), so this upserts one `ChannelMap` per instrument
+    /// channel instead of replacing the whole map.
+    pub fn set_channel_out(&mut self, instrument: usize, channel: usize, out: Option<usize>) {
+        let out_name = out
+            .and_then(|i| self.drumkit.channels.get(i))
+            .map(|c| c.name.clone());
+        let Some(inst) = self.instruments.get_mut(instrument) else {
             return;
         };
-        let Some(out) = channel.and_then(|i| self.drumkit.channels.get(i)) else {
-            inst.reference.channel_map.clear();
-            inst.instrument.channel_map.clear();
+        let Some(ch) = inst.instrument.channels.get(channel) else {
+            return;
+        };
+        inst.reference.channel_map.retain(|m| m.in_name != ch.name);
+        if let Some(out_name) = out_name {
+            inst.reference.channel_map.push(ChannelMap {
+                in_name: ch.name.clone(),
+                out_name,
+                is_main: false,
+            });
+        }
+        inst.instrument.channel_map = inst.reference.channel_map.clone();
+        self.dirty = true;
+    }
+
+    /// Marks an instrument channel's map as main or bleed. The instrument keeps
+    /// the `main` flag per channel, so several channels can be main at once.
+    pub fn set_channel_main(&mut self, instrument: usize, channel: usize, is_main: bool) {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return;
+        };
+        let Some(ch) = inst.instrument.channels.get(channel) else {
+            return;
+        };
+        let Some(map) = inst
+            .reference
+            .channel_map
+            .iter_mut()
+            .find(|m| m.in_name == ch.name)
+        else {
+            return;
+        };
+        if map.is_main != is_main {
+            map.is_main = is_main;
+            inst.instrument.channel_map = inst.reference.channel_map.clone();
             self.dirty = true;
+        }
+    }
+
+    /// Adds an instrument-local channel (in addition to any kit channels it
+    /// mirrors) so an instrument can feed several outputs.
+    pub fn add_instrument_channel(&mut self, instrument: usize, name: &str) {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
             return;
         };
-        let map = ChannelMap {
-            in_name: out.name.clone(),
-            out_name: out.name.clone(),
-            is_main: true,
+        inst.instrument
+            .channels
+            .push(InstrumentChannel { name: name.into(), is_main: false });
+        self.dirty = true;
+    }
+
+    pub fn remove_instrument_channel(&mut self, instrument: usize, channel: usize) {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return;
         };
-        inst.reference.channel_map = vec![map.clone()];
-        inst.instrument.channel_map = vec![map];
+        let Some(removed) = inst.instrument.channels.get(channel) else {
+            return;
+        };
+        let name = removed.name.clone();
+        inst.instrument.channels.remove(channel);
+        inst.reference.channel_map.retain(|m| m.in_name != name);
+        inst.instrument.channel_map = inst.reference.channel_map.clone();
+        for sample in &mut inst.instrument.samples {
+            sample.audio_files.retain(|a| a.channel != name);
+        }
         self.dirty = true;
     }
 
