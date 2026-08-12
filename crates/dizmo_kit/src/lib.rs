@@ -14,11 +14,11 @@
 //!   `<velocities>` groups instead.
 //! - Each hit is one WAV file that may contain several channels (`filechannel`
 //!   picks one, 1-based in XML). Every channel maps to a kit output channel.
-//!
-//! All parsing happens off the audio thread. The engine only reads the
-//! immutable data built by [`DizmoKit::load`].
 
-use std::path::{Path, PathBuf};
+use std::{
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
 pub mod drumkit;
 pub mod instrument;
@@ -81,21 +81,20 @@ impl KitError {
 /// A fully resolved DrumGizmo kit, ready for the engine to use.
 #[derive(Debug)]
 pub struct DizmoKit {
-    /// The `version` attribute of the `drumkit.xml` (x.y.z versioning).
-    pub version: String,
-    pub name: String,
-    pub description: String,
-    /// The kit's declared sample rate (defaults to 44100 Hz).
-    pub samplerate: f64,
-    /// Directory containing the `drumkit.xml`. Instrument and sample paths are
-    /// relative to this directory.
+    pub drums: DrumKit,
     pub root_dir: PathBuf,
-    /// The output channels declared by the kit.
-    pub channels: Vec<KitChannel>,
     /// The instruments, in drumkit declaration order (their `id` is the index).
     pub instruments: Vec<Instrument>,
     /// Relative path to a `midimap.xml` bundled with the kit, if any.
     pub default_midimap: Option<String>,
+}
+
+impl Deref for DizmoKit {
+    type Target = DrumKit;
+
+    fn deref(&self) -> &Self::Target {
+        &self.drums
+    }
 }
 
 impl DizmoKit {
@@ -103,7 +102,7 @@ impl DizmoKit {
     /// instrument XML file relative to the drumkit file.
     pub fn load(path: impl AsRef<Path>) -> Result<DizmoKit, KitError> {
         let path = path.as_ref();
-        let drumkit = drumkit::parse_file(path)?;
+        let mut drumkit = drumkit::parse_file(path)?;
         let root_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
 
         let mut instruments = Vec::with_capacity(drumkit.instrument_refs.len());
@@ -113,22 +112,17 @@ impl DizmoKit {
             // The drumkit reference name is canonical: it is what midimap.xml
             // and <choke> nodes refer to.
             instrument.id = id;
-            instrument.name = reference.name.clone();
-            instrument.group = reference.group.clone();
-            instrument.channel_map = reference.channel_map.clone();
-            instrument.chokes = reference.chokes.clone();
             instruments.push(instrument);
         }
-
+        let midimap = drumkit
+            .default_midimap
+            .take()
+            .or_else(|| detect_midimap(path));
         Ok(DizmoKit {
-            version: drumkit.version,
-            name: drumkit.name,
-            description: drumkit.description,
-            samplerate: drumkit.samplerate,
+            drums: drumkit,
             root_dir,
-            channels: drumkit.channels,
             instruments,
-            default_midimap: drumkit.default_midimap.or_else(|| detect_midimap(path)),
+            default_midimap: midimap,
         })
     }
 
