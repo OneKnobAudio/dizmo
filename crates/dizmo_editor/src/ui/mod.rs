@@ -11,6 +11,7 @@ use iced::widget::{Space, button, column, container, mouse_area, row, scrollable
 use iced::{Element, Length, Task};
 use rfd::AsyncFileDialog;
 
+use crate::model::load::load;
 use crate::model::EditorKit;
 
 use modal::{Modal, ModalMessage, NewKitDraft};
@@ -34,6 +35,7 @@ pub enum Message {
     NewKitCreate,
     NewKitCancel,
     KitOpened(Option<PathBuf>),
+    KitLoaded(Box<Result<(EditorKit, Option<String>), String>>),
     Save,
     SaveAs,
     SaveAsPicked(Option<PathBuf>),
@@ -132,20 +134,34 @@ impl App {
                 self.status = None;
             }
             Message::NewKitCancel => self.modal = None,
-            Message::KitOpened(Some(dir)) => {
-                let name = dir
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Kit".into());
-                let mut kit = EditorKit::new_kit(&name, DEFAULT_SAMPLERATE, &[]);
-                kit.root_dir = Some(dir);
-                self.samplerate_text = DEFAULT_SAMPLERATE.to_string();
-                self.kit = Some(kit);
-                self.selection = Selection::Kit;
-                self.modal = None;
-                self.status = Some("Opened directory — reading kit files lands in Phase 2.".into());
+            Message::KitOpened(Some(file)) => {
+                return Task::perform(
+                    async move { load(&file) },
+                    |result| {
+                        Message::KitLoaded(Box::new(match result {
+                            Ok((kit, warning)) => Ok((kit, warning)),
+                            Err(err) => Err(err.to_string()),
+                        }))
+                    },
+                );
             }
             Message::KitOpened(None) => {}
+            Message::KitLoaded(result) => match *result {
+                Ok((kit, warning)) => {
+                    self.samplerate_text = kit.drumkit.samplerate.to_string();
+                    let mut status = format!("Loaded kit '{}'.", kit.drumkit.name);
+                    if let Some(warning) = warning {
+                        status = format!("{status} {warning}");
+                    }
+                    self.kit = Some(kit);
+                    self.selection = Selection::Kit;
+                    self.modal = None;
+                    self.status = Some(status);
+                }
+                Err(error) => {
+                    self.status = Some(format!("Could not load kit: {error}"));
+                }
+            },
             Message::Save => {
                 if self.kit.as_ref().is_none_or(|kit| kit.root_dir.is_none()) {
                     return self.pick_save_dir();

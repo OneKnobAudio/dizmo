@@ -7,7 +7,7 @@ use crate::xml::{attr, load_document, parse_bool, parse_f32, parse_u32, read_fil
 use crate::{ChannelMap, Choke, KitError};
 
 /// A single DrumGizmo instrument, resolved against the kit.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Instrument {
     /// Canonical name (from the `drumkit.xml` reference).
     pub name: String,

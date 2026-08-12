@@ -109,9 +109,14 @@ impl DizmoKit {
         for (id, reference) in drumkit.instrument_refs.iter().enumerate() {
             let file = root_dir.join(&reference.file);
             let mut instrument = instrument::parse_file(&file)?;
-            // The drumkit reference name is canonical: it is what midimap.xml
-            // and <choke> nodes refer to.
+            // The drumkit reference is canonical: its name is what midimap.xml
+            // and <choke> nodes refer to, and it carries the channel map and
+            // chokes, which are not part of the instrument file itself.
             instrument.id = id;
+            instrument.name = reference.name.clone();
+            instrument.group = reference.group.clone();
+            instrument.channel_map = reference.channel_map.clone();
+            instrument.chokes = reference.chokes.clone();
             instruments.push(instrument);
         }
         let midimap = drumkit

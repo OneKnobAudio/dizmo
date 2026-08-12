@@ -11,7 +11,7 @@ use crate::{ChannelMap, Choke, DEFAULT_CHOKETIME_MS, DEFAULT_SAMPLERATE, KitChan
 
 /// The parsed contents of a `drumkit.xml`, before the referenced instrument
 /// files have been loaded.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DrumKit {
     pub version: String,
     pub samplerate: f64,
