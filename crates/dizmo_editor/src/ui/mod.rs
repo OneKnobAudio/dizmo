@@ -7,7 +7,7 @@ pub mod theme;
 
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Element, Length, Task};
 use rfd::AsyncFileDialog;
 
@@ -89,7 +89,9 @@ impl App {
             }
             Message::OpenKitClicked => {
                 return Task::perform(
-                    AsyncFileDialog::new().pick_folder(),
+                    AsyncFileDialog::new()
+                        .add_filter("Kits", &["xml"])
+                        .pick_file(),
                     |picked| Message::KitOpened(picked.map(|handle| handle.path().to_path_buf())),
                 );
             }
@@ -228,7 +230,8 @@ impl App {
             Message::AddSample(i) => {
                 if let Some(kit) = &mut self.kit {
                     let n = kit.instruments[i].instrument.samples.len();
-                    let index = kit.add_sample(i, &format!("Sample {}", n + 1), "samples/placeholder.wav");
+                    let index =
+                        kit.add_sample(i, &format!("Sample {}", n + 1), "samples/placeholder.wav");
                     self.selection = Selection::Sample(i, index);
                 }
             }
@@ -265,7 +268,9 @@ impl App {
                     .and_then(|inst| inst.instrument.samples.get(sample))
                     .map(|s| s.name.clone());
                 self.status = Some(match name {
-                    Some(name) => format!("Previewing {name} — sample preview lands in Phase 4 (rodio)."),
+                    Some(name) => {
+                        format!("Previewing {name} — sample preview lands in Phase 4 (rodio).")
+                    }
                     None => "Sample preview lands in Phase 4 (rodio).".into(),
                 });
             }
@@ -302,10 +307,9 @@ impl App {
     }
 
     fn pick_save_dir(&self) -> Task<Message> {
-        Task::perform(
-            AsyncFileDialog::new().pick_folder(),
-            |picked| Message::SaveAsPicked(picked.map(|handle| handle.path().to_path_buf())),
-        )
+        Task::perform(AsyncFileDialog::new().pick_folder(), |picked| {
+            Message::SaveAsPicked(picked.map(|handle| handle.path().to_path_buf()))
+        })
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -333,7 +337,11 @@ impl App {
                 text(&kit.drumkit.name).size(13).color(theme::TEXT),
                 text(if kit.dirty { "●" } else { "•" })
                     .size(13)
-                    .color(if kit.dirty { theme::SOLO_ACTIVE } else { theme::TEXT_DIM }),
+                    .color(if kit.dirty {
+                        theme::SOLO_ACTIVE
+                    } else {
+                        theme::TEXT_DIM
+                    }),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
@@ -366,7 +374,9 @@ impl App {
 
         column![
             toolbar,
-            row![sidebar, context].width(Length::Fill).height(Length::Fill),
+            row![sidebar, context]
+                .width(Length::Fill)
+                .height(Length::Fill),
             status,
         ]
         .width(Length::Fill)
@@ -377,7 +387,9 @@ impl App {
     fn context_panel<'a>(&'a self, kit: &'a EditorKit) -> Element<'a, Message> {
         match self.selection {
             Selection::Kit => panels::kit_panel(kit, &self.samplerate_text),
-            Selection::Instrument(i) if i < kit.instruments.len() => panels::instrument_panel(kit, i),
+            Selection::Instrument(i) if i < kit.instruments.len() => {
+                panels::instrument_panel(kit, i)
+            }
             Selection::Sample(i, s)
                 if i < kit.instruments.len() && s < kit.instruments[i].instrument.samples.len() =>
             {
