@@ -621,6 +621,7 @@ impl DizmoEditor {
 
     /// Builds a brand-new editor with its own fresh `Some` editor state. Each
     /// `spawn` gets one of these, so `from_shared` can never find `None`.
+    #[allow(clippy::too_many_arguments)]
     fn build_editor(
         window_state: Arc<WindowState>,
         params: &Arc<DizmoParams>,

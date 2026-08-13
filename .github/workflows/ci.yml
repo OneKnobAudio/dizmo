@@ -39,12 +39,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libasound2-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
             libx11-dev \
             libx11-xcb-dev \
             libxcb1-dev \
-            libxkbcommon-dev
+            libxkbcommon-dev \
+            pkg-config
 
       - name: Check formatting
         run: cargo fmt --check
@@ -90,12 +92,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libasound2-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
             libx11-dev \
             libx11-xcb-dev \
             libxcb1-dev \
-            libxkbcommon-dev
+            libxkbcommon-dev \
+            pkg-config
 
       - name: Package all plugins
         run: |
@@ -157,12 +161,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libasound2-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
             libx11-dev \
             libx11-xcb-dev \
             libxcb1-dev \
-            libxkbcommon-dev
+            libxkbcommon-dev \
+            pkg-config
 
       - name: Build editor (macOS universal)
         if: runner.os == 'macOS'
