@@ -26,7 +26,7 @@ pub mod midimap;
 
 mod xml;
 
-pub use drumkit::DrumKit;
+pub use drumkit::{ClickMap, DrumKit, KitImage, KitMetadata};
 pub use instrument::{
     AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
 };
@@ -85,7 +85,8 @@ pub struct DizmoKit {
     pub root_dir: PathBuf,
     /// The instruments, in drumkit declaration order (their `id` is the index).
     pub instruments: Vec<Instrument>,
-    /// Relative path to a `midimap.xml` bundled with the kit, if any.
+    /// Relative path to the kit's midimap, resolved from the kit filename
+    /// (`midimap.xml` or `Midimap_<variation>.xml`).
     pub default_midimap: Option<String>,
 }
 
@@ -98,11 +99,11 @@ impl Deref for DizmoKit {
 }
 
 impl DizmoKit {
-    /// Loads a kit from its `drumkit.xml` file, resolving every referenced
-    /// instrument XML file relative to the drumkit file.
+    /// Loads a kit from its `<KITNAME>.xml` file, resolving every referenced
+    /// instrument XML file relative to the kit file.
     pub fn load(path: impl AsRef<Path>) -> Result<DizmoKit, KitError> {
         let path = path.as_ref();
-        let mut drumkit = drumkit::parse_file(path)?;
+        let drumkit = drumkit::parse_file(path)?;
         let root_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
 
         let mut instruments = Vec::with_capacity(drumkit.instrument_refs.len());
@@ -119,10 +120,7 @@ impl DizmoKit {
             instrument.chokes = reference.chokes.clone();
             instruments.push(instrument);
         }
-        let midimap = drumkit
-            .default_midimap
-            .take()
-            .or_else(|| detect_midimap(path));
+        let midimap = detect_midimap(path);
         Ok(DizmoKit {
             drums: drumkit,
             root_dir,
@@ -184,8 +182,7 @@ impl DizmoKit {
 /// Applies the DrumGizmo midimap naming convention: a kit file named
 /// `<name>_<variation>.xml` is paired with `Midimap_<variation>.xml` next to
 /// it (e.g. `CrocellKit_full.xml` -> `Midimap_full.xml`), while a kit without
-/// a variation pairs with the plain `midimap.xml`. Only used when the drumkit
-/// XML does not declare a `<defaultmidimap>`.
+/// a variation pairs with the plain `midimap.xml`.
 fn detect_midimap(drumkit_path: &Path) -> Option<String> {
     let stem = drumkit_path.file_stem()?.to_str()?;
     match stem.rfind('_') {

@@ -5,7 +5,6 @@
     <title>Test Kit</title>
     <description>Fixture kit for tests</description>
     <license>Creative Commons</license>
-    <defaultmidimap src="midimap.xml"/>
   </metadata>
   <channels>
     <channel name="AmbL"/>

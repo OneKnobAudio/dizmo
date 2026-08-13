@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use dizmo_kit::drumkit::InstrumentRef;
 use dizmo_kit::{
-    AudioFile, ChannelMap, DrumKit, Instrument, InstrumentChannel, KitChannel, MidiMap,
-    MidiMapEntry, Sample,
+    AudioFile, ChannelMap, DrumKit, Instrument, InstrumentChannel, KitChannel, KitMetadata,
+    MidiMap, MidiMapEntry, Sample,
 };
 
 /// The editable kit: the drumkit plus each instrument kept paired with the
@@ -12,6 +12,12 @@ use dizmo_kit::{
 pub struct EditorKit {
     /// Kit directory, once the user has picked one (Open / Save As).
     pub root_dir: Option<PathBuf>,
+    /// Filename of the kit XML file, e.g. `"My Kit.xml"`. Derived from the kit
+    /// name for new kits and preserved from the opened file for existing kits.
+    pub kit_file_name: Option<String>,
+    /// Resolved midimap filename (`midimap.xml` or `Midimap_<variation>.xml`),
+    /// derived from the kit filename. `None` means no midimap is associated.
+    pub default_midimap: Option<String>,
     pub drumkit: DrumKit,
     pub instruments: Vec<EditorInstrument>,
     pub midimap: MidiMap,
@@ -41,12 +47,17 @@ impl EditorKit {
             .collect();
         Self {
             root_dir: None,
+            kit_file_name: Some(format!("{name}.xml")),
+            default_midimap: Some("midimap.xml".into()),
             drumkit: DrumKit {
                 version: "2.0".into(),
                 samplerate,
                 name: name.into(),
                 description: String::new(),
-                default_midimap: Some("midimap.xml".into()),
+                metadata: KitMetadata {
+                    title: Some(name.into()),
+                    ..KitMetadata::default()
+                },
                 channels: kit_channels,
                 instrument_refs: Vec::new(),
             },
@@ -193,9 +204,10 @@ impl EditorKit {
         let Some(inst) = self.instruments.get_mut(instrument) else {
             return;
         };
-        inst.instrument
-            .channels
-            .push(InstrumentChannel { name: name.into(), is_main: false });
+        inst.instrument.channels.push(InstrumentChannel {
+            name: name.into(),
+            is_main: false,
+        });
         self.dirty = true;
     }
 

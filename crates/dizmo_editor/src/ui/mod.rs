@@ -8,14 +8,14 @@ pub mod theme;
 
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Element, Length, Task};
 use rfd::AsyncFileDialog;
 
 use crate::audio::PreviewPlayer;
+use crate::model::EditorKit;
 use crate::model::load::load;
 use crate::model::save::save;
-use crate::model::EditorKit;
 
 use modal::{Modal, ModalMessage, NewKitDraft};
 
@@ -151,15 +151,12 @@ impl App {
             }
             Message::NewKitCancel => self.modal = None,
             Message::KitOpened(Some(file)) => {
-                return Task::perform(
-                    async move { load(&file) },
-                    |result| {
-                        Message::KitLoaded(Box::new(match result {
-                            Ok((kit, warning)) => Ok((kit, warning)),
-                            Err(err) => Err(err.to_string()),
-                        }))
-                    },
-                );
+                return Task::perform(async move { load(&file) }, |result| {
+                    Message::KitLoaded(Box::new(match result {
+                        Ok((kit, warning)) => Ok((kit, warning)),
+                        Err(err) => Err(err.to_string()),
+                    }))
+                });
             }
             Message::KitOpened(None) => {}
             Message::KitLoaded(result) => match *result {
@@ -216,7 +213,8 @@ impl App {
                 if let Some(kit) = &mut self.kit
                     && kit.drumkit.name != name
                 {
-                    kit.drumkit.name = name;
+                    kit.drumkit.name = name.clone();
+                    kit.drumkit.metadata.title = Some(name);
                     kit.dirty = true;
                 }
             }
@@ -224,7 +222,8 @@ impl App {
                 if let Some(kit) = &mut self.kit
                     && kit.drumkit.description != description
                 {
-                    kit.drumkit.description = description;
+                    kit.drumkit.description = description.clone();
+                    kit.drumkit.metadata.description = Some(description);
                     kit.dirty = true;
                 }
             }
@@ -345,7 +344,8 @@ impl App {
                     return Task::none();
                 };
                 let path = inst.instrument.base_dir.join(&audio_file.file);
-                self.player.play(&path, audio_file.file_channel, self.preview_volume);
+                self.player
+                    .play(&path, audio_file.file_channel, self.preview_volume);
                 self.previewing = Some((instrument, sample));
                 self.status = Some(format!("Previewing '{}'.", sample_ref.name));
             }
@@ -404,10 +404,9 @@ impl App {
             return self.pick_save_dir();
         }
         let mut kit = kit.clone();
-        Task::perform(
-            async move { save(&mut kit).map(|()| kit) },
-            |result| Message::Saved(Box::new(result)),
-        )
+        Task::perform(async move { save(&mut kit).map(|()| kit) }, |result| {
+            Message::Saved(Box::new(result))
+        })
     }
 
     fn pick_save_dir(&self) -> Task<Message> {

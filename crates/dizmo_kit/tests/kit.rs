@@ -1,6 +1,23 @@
 use dizmo_kit::{Choke, DizmoKit, KitError, MidiMap};
 use std::path::Path;
 
+fn assert_metadata_fixture(kit: &DizmoKit) {
+    let metadata = &kit.drums.metadata;
+    assert_eq!(metadata.version.as_deref(), Some("1.2.3"));
+    assert_eq!(metadata.title.as_deref(), Some("Test Kit"));
+    assert_eq!(
+        metadata.description.as_deref(),
+        Some("Fixture kit for tests")
+    );
+    assert_eq!(metadata.license.as_deref(), Some("Creative Commons"));
+    assert!(metadata.logo.is_none());
+    assert!(metadata.notes.is_none());
+    assert!(metadata.author.is_none());
+    assert!(metadata.email.is_none());
+    assert!(metadata.website.is_none());
+    assert!(metadata.image.is_none());
+}
+
 fn fixture_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kit"))
 }
@@ -37,6 +54,12 @@ fn loads_a_complete_kit() {
 
     // base_dir points at the instrument files' directory.
     assert_eq!(kit.instruments[0].base_dir, fixture_dir());
+}
+
+#[test]
+fn parses_kit_metadata() {
+    let kit = DizmoKit::load(fixture_dir().join("drumkit.xml")).unwrap();
+    assert_metadata_fixture(&kit);
 }
 
 #[test]
@@ -320,22 +343,54 @@ fn does_not_detect_midimap_for_degenerate_underscore() {
 }
 
 #[test]
-fn explicit_defaultmidimap_wins_over_convention() {
-    let dir = std::env::temp_dir().join("dizmo-midimap-explicit");
+fn parses_full_metadata_block() {
+    let dir = std::env::temp_dir().join("dizmo-metadata-full");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("SomeKit_7.xml"),
-        r#"<drumkit version="2.0">
-  <metadata><defaultmidimap src="custom.xml"/></metadata>
+
+    let drumkit = r#"<drumkit version="2.0">
+  <metadata>
+    <version>1.2.3</version>
+    <title>Full Kit</title>
+    <logo src="LogoFile.png"/>
+    <description>This is the description</description>
+    <license>Creative Commons</license>
+    <notes>General notes</notes>
+    <author>Author</author>
+    <email>author@email.org</email>
+    <website>http://example.org</website>
+    <image src="DrumkitImage.png" map="DrumkitImageClickMap.png">
+      <clickmap colour="ff08a2" instrument="China"/>
+      <clickmap colour="a218d7" instrument="HihatClosed"/>
+    </image>
+  </metadata>
   <instruments><instrument name="Kick" file="inst_kick.xml"/></instruments>
-</drumkit>"#,
-    )
-    .unwrap();
+</drumkit>"#;
+    std::fs::write(dir.join("drumkit.xml"), drumkit).unwrap();
     std::fs::write(dir.join("inst_kick.xml"), MINIMAL_INST).unwrap();
 
-    let kit = DizmoKit::load(dir.join("SomeKit_7.xml")).unwrap();
-    assert_eq!(kit.default_midimap.as_deref(), Some("custom.xml"));
+    let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
+    assert_eq!(kit.name, "Full Kit");
+    assert_eq!(kit.description, "This is the description");
+
+    let metadata = &kit.drums.metadata;
+    assert_eq!(metadata.version.as_deref(), Some("1.2.3"));
+    assert_eq!(metadata.title.as_deref(), Some("Full Kit"));
+    assert_eq!(metadata.logo.as_deref(), Some("LogoFile.png"));
+    assert_eq!(metadata.license.as_deref(), Some("Creative Commons"));
+    assert_eq!(metadata.notes.as_deref(), Some("General notes"));
+    assert_eq!(metadata.author.as_deref(), Some("Author"));
+    assert_eq!(metadata.email.as_deref(), Some("author@email.org"));
+    assert_eq!(metadata.website.as_deref(), Some("http://example.org"));
+
+    let image = metadata.image.as_ref().unwrap();
+    assert_eq!(image.src, "DrumkitImage.png");
+    assert_eq!(image.map.as_deref(), Some("DrumkitImageClickMap.png"));
+    assert_eq!(image.clickmap.len(), 2);
+    assert_eq!(image.clickmap[0].colour, "ff08a2");
+    assert_eq!(image.clickmap[0].instrument, "China");
+    assert_eq!(image.clickmap[1].colour, "a218d7");
+    assert_eq!(image.clickmap[1].instrument, "HihatClosed");
 
     std::fs::remove_dir_all(&dir).ok();
 }

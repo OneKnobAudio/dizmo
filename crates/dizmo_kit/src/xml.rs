@@ -60,30 +60,6 @@ pub(crate) fn required_attr(node: &Node, name: &str, path: &Path) -> Result<Stri
     })
 }
 
-/// Text content of the first child element with the given tag name.
-pub(crate) fn child_text(node: &Node, name: &str) -> Option<String> {
-    node.children()
-        .find(|child| child.has_tag_name(name))
-        .and_then(|child| child.text())
-        .map(str::to_owned)
-}
-
-/// Text content of `<metadata><name>` inside the given root node.
-pub(crate) fn metadata_text(root: &Node, name: &str) -> Option<String> {
-    root.children()
-        .find(|child| child.has_tag_name("metadata"))
-        .and_then(|metadata| child_text(&metadata, name))
-}
-
-/// The `src` attribute of `<metadata><name>` inside the given root node.
-pub(crate) fn metadata_attr(root: &Node, name: &str) -> Option<String> {
-    root.children()
-        .find(|child| child.has_tag_name("metadata"))
-        .and_then(|metadata| metadata.children().find(|child| child.has_tag_name(name)))
-        .and_then(|child| child.attribute("src"))
-        .map(str::to_owned)
-}
-
 pub(crate) fn parse_f64(value: &str, what: &str, path: &Path) -> Result<f64, KitError> {
     value
         .trim()

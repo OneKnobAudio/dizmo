@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use dizmo_kit::{DrumKit, Instrument, MidiMap};
+use dizmo_kit::{DrumKit, Instrument, KitMetadata, MidiMap};
 
 use crate::model::{EditorInstrument, EditorKit};
 
@@ -48,6 +48,17 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
         .ok_or_else(|| "No save directory chosen yet.".to_string())?;
     std::fs::create_dir_all(&root)
         .map_err(|err| format!("Could not create '{}': {err}", root.display()))?;
+
+    let kit_file_name = kit
+        .kit_file_name
+        .clone()
+        .unwrap_or_else(|| "drumkit.xml".to_string());
+    let kit_path = root.join(&kit_file_name);
+    let resolved_midimap = midimap_name_for_kit(&kit_path);
+
+    for inst in &mut kit.instruments {
+        convert_v1_instrument_to_v2(&mut inst.instrument);
+    }
 
     let mut seen = std::collections::HashSet::new();
     for inst in &kit.instruments {
@@ -80,17 +91,15 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
         write_atomic(&plan.file, &plan.xml)?;
     }
 
-    let write_midimap = !kit.midimap.entries.is_empty() || kit.drumkit.default_midimap.is_some();
-    let midimap_name = write_midimap.then(|| "midimap.xml".to_string());
+    let write_midimap = !kit.midimap.entries.is_empty() || kit.default_midimap.is_some();
+    let midimap_name =
+        write_midimap.then(|| resolved_midimap.unwrap_or_else(|| "midimap.xml".to_string()));
     if let Some(name) = &midimap_name {
         write_atomic(&root.join(name), &serialize_midimap(&kit.midimap))?;
     }
 
     let ref_files: Vec<String> = plans.iter().map(|plan| plan.rel_file.clone()).collect();
-    write_atomic(
-        &root.join("drumkit.xml"),
-        &serialize_drumkit(&kit.drumkit, &ref_files, midimap_name.as_deref()),
-    )?;
+    write_atomic(&kit_path, &serialize_drumkit(&kit.drumkit, &ref_files))?;
 
     for (inst, plan) in kit.instruments.iter_mut().zip(&plans) {
         inst.file = PathBuf::from(&plan.rel_file);
@@ -106,9 +115,53 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
             }
         }
     }
-    kit.drumkit.default_midimap = midimap_name;
+    kit.default_midimap = midimap_name;
     kit.dirty = false;
     Ok(())
+}
+
+/// Converts a version 1.0 (velocity-group) instrument to version 2.0
+/// (power-based samples) in place.
+///
+/// Each sample's `power` is derived from the velocity groups that reference it,
+/// weighted by their `sampleref` probabilities. The midpoint of each velocity
+/// range `(lower + upper) / 2` is used as the representative power for that
+/// reference. After conversion the instrument's `<velocities>` node is emptied
+/// and its version is set to `"2.0"`.
+fn convert_v1_instrument_to_v2(inst: &mut Instrument) {
+    if inst.is_v2() || inst.velocities.is_empty() {
+        return;
+    }
+
+    let mut weighted: HashMap<String, (f32, f32)> = HashMap::new();
+    for group in &inst.velocities {
+        let midpoint = (group.lower + group.upper) / 2.0;
+        for sample_ref in &group.sample_refs {
+            let (sum, weight) = weighted
+                .entry(sample_ref.name.clone())
+                .or_insert((0.0, 0.0));
+            *sum += sample_ref.probability * midpoint;
+            *weight += sample_ref.probability;
+        }
+    }
+
+    for sample in &mut inst.samples {
+        let power = weighted
+            .get(&sample.name)
+            .and_then(|(sum, weight)| {
+                if *weight > 0.0 {
+                    Some((sum / weight).clamp(0.0, 1.0))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.5);
+        sample.power = power;
+        sample.normalized = false;
+    }
+
+    inst.velocities.clear();
+    inst.version = "2.0".to_string();
 }
 
 fn plan_instrument(inst: &EditorInstrument, root: &Path) -> Result<InstrumentPlan, String> {
@@ -219,11 +272,75 @@ fn unique_name(base: &str, taken: &mut HashMap<String, ()>) -> String {
     }
 }
 
-fn serialize_drumkit(
-    drumkit: &DrumKit,
-    instrument_files: &[String],
-    midimap: Option<&str>,
-) -> String {
+/// Resolves the midimap filename from the kit XML filename using the same
+/// convention as `dizmo_kit`: `<name>.xml` → `midimap.xml`,
+/// `<name>_<variation>.xml` → `Midimap_<variation>.xml`.
+fn midimap_name_for_kit(kit_path: &Path) -> Option<String> {
+    let stem = kit_path.file_stem()?.to_str()?;
+    match stem.rfind('_') {
+        Some(underscore) => {
+            let variation = &stem[underscore + 1..];
+            if variation.is_empty() {
+                None
+            } else {
+                Some(format!("Midimap_{variation}.xml"))
+            }
+        }
+        None => Some("midimap.xml".to_string()),
+    }
+}
+
+fn serialize_metadata(name: &str, description: &str, metadata: &KitMetadata) -> String {
+    let mut out = String::from("  <metadata>\n");
+    if let Some(version) = &metadata.version {
+        out.push_str(&format!("    <version>{}</version>\n", esc(version)));
+    }
+    out.push_str(&format!("    <title>{}</title>\n", esc(name)));
+    if let Some(logo) = &metadata.logo {
+        out.push_str(&format!("    <logo src=\"{}\"/>\n", esc(logo)));
+    }
+    if !description.is_empty() {
+        out.push_str(&format!(
+            "    <description>{}</description>\n",
+            esc(description)
+        ));
+    }
+    if let Some(license) = &metadata.license {
+        out.push_str(&format!("    <license>{}</license>\n", esc(license)));
+    }
+    if let Some(notes) = &metadata.notes {
+        out.push_str(&format!("    <notes>{}</notes>\n", esc(notes)));
+    }
+    if let Some(author) = &metadata.author {
+        out.push_str(&format!("    <author>{}</author>\n", esc(author)));
+    }
+    if let Some(email) = &metadata.email {
+        out.push_str(&format!("    <email>{}</email>\n", esc(email)));
+    }
+    if let Some(website) = &metadata.website {
+        out.push_str(&format!("    <website>{}</website>\n", esc(website)));
+    }
+    if let Some(image) = &metadata.image {
+        let map = image
+            .map
+            .as_deref()
+            .map(|m| format!(" map=\"{}\"", esc(m)))
+            .unwrap_or_default();
+        out.push_str(&format!("    <image src=\"{}\"{map}>\n", esc(&image.src)));
+        for clickmap in &image.clickmap {
+            out.push_str(&format!(
+                "      <clickmap colour=\"{}\" instrument=\"{}\"/>\n",
+                esc(&clickmap.colour),
+                esc(&clickmap.instrument)
+            ));
+        }
+        out.push_str("    </image>\n");
+    }
+    out.push_str("  </metadata>\n");
+    out
+}
+
+fn serialize_drumkit(drumkit: &DrumKit, instrument_files: &[String]) -> String {
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str(&format!(
@@ -231,16 +348,11 @@ fn serialize_drumkit(
         drumkit.samplerate,
         esc(&drumkit.version)
     ));
-    out.push_str("  <metadata>\n");
-    out.push_str(&format!("    <title>{}</title>\n", esc(&drumkit.name)));
-    out.push_str(&format!(
-        "    <description>{}</description>\n",
-        esc(&drumkit.description)
+    out.push_str(&serialize_metadata(
+        &drumkit.name,
+        &drumkit.description,
+        &drumkit.metadata,
     ));
-    if let Some(midimap) = midimap {
-        out.push_str(&format!("    <defaultmidimap src=\"{}\"/>\n", esc(midimap)));
-    }
-    out.push_str("  </metadata>\n");
     out.push_str("  <channels>\n");
     for channel in &drumkit.channels {
         out.push_str(&format!("    <channel name=\"{}\"/>\n", esc(&channel.name)));
@@ -464,14 +576,14 @@ mod tests {
 
         save(&mut kit).unwrap();
         assert!(!kit.dirty);
-        assert_eq!(kit.drumkit.default_midimap.as_deref(), Some("midimap.xml"));
+        assert_eq!(kit.default_midimap.as_deref(), Some("midimap.xml"));
 
         assert!(root.join("Kick Drum/Kick Drum.xml").exists());
         assert!(root.join("Kick Drum/samples/outside.wav").exists());
         assert!(root.join("Snare/Snare.xml").exists());
         assert!(!root.join("Snare/samples/inside.wav").exists());
 
-        let loaded = DizmoKit::load(root.join("drumkit.xml")).unwrap();
+        let loaded = DizmoKit::load(root.join("Save Test.xml")).unwrap();
         assert_eq!(loaded.drums.name, "Save Test");
         assert_eq!(loaded.drums.samplerate, 48000.0);
         assert_eq!(loaded.instruments.len(), 2);
@@ -513,7 +625,7 @@ mod tests {
 
         save(&mut kit).unwrap();
 
-        let loaded = DizmoKit::load(root.join("drumkit.xml")).unwrap();
+        let loaded = DizmoKit::load(root.join("Ghost Kit.xml")).unwrap();
         assert_eq!(loaded.instruments[0].name, "Ghost");
         assert_eq!(
             loaded.instruments[0].samples[0].audio_files[0].file,
@@ -539,12 +651,125 @@ mod tests {
     }
 
     #[test]
+    fn converts_v1_velocity_groups_to_v2_power() {
+        use dizmo_kit::{
+            AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
+        };
+
+        let mut inst = Instrument {
+            name: "HihatClosed".into(),
+            description: String::new(),
+            version: "1.0".into(),
+            id: 0,
+            base_dir: PathBuf::new(),
+            group: None,
+            channel_map: Vec::new(),
+            chokes: Vec::new(),
+            channels: vec![InstrumentChannel {
+                name: "Hihat".into(),
+                is_main: true,
+            }],
+            samples: vec![
+                Sample {
+                    name: "HC-1".into(),
+                    power: 0.0,
+                    normalized: false,
+                    audio_files: vec![AudioFile {
+                        channel: "Hihat".into(),
+                        file: "samples/hc1.wav".into(),
+                        file_channel: 0,
+                    }],
+                },
+                Sample {
+                    name: "HC-2".into(),
+                    power: 0.0,
+                    normalized: false,
+                    audio_files: vec![AudioFile {
+                        channel: "Hihat".into(),
+                        file: "samples/hc2.wav".into(),
+                        file_channel: 0,
+                    }],
+                },
+            ],
+            velocities: vec![
+                VelocityGroup {
+                    lower: 0.0,
+                    upper: 0.5,
+                    sample_refs: vec![
+                        VelocitySampleRef {
+                            name: "HC-1".into(),
+                            probability: 0.8,
+                        },
+                        VelocitySampleRef {
+                            name: "HC-2".into(),
+                            probability: 0.2,
+                        },
+                    ],
+                },
+                VelocityGroup {
+                    lower: 0.5,
+                    upper: 1.0,
+                    sample_refs: vec![VelocitySampleRef {
+                        name: "HC-2".into(),
+                        probability: 1.0,
+                    }],
+                },
+            ],
+        };
+
+        convert_v1_instrument_to_v2(&mut inst);
+
+        assert_eq!(inst.version, "2.0");
+        assert!(inst.velocities.is_empty());
+        assert_eq!(inst.samples.len(), 2);
+
+        let hc1 = inst.samples.iter().find(|s| s.name == "HC-1").unwrap();
+        assert_eq!(hc1.power, 0.25);
+        assert!(!hc1.normalized);
+
+        let hc2 = inst.samples.iter().find(|s| s.name == "HC-2").unwrap();
+        assert!((hc2.power - 0.666_666_7).abs() < 1e-6);
+        assert!(!hc2.normalized);
+    }
+
+    #[test]
+    fn save_uses_kit_name_as_filename_and_resolves_variation_midimap() {
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_variation_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit("MyKit_full", 44100.0, &["Kick".into()]);
+        kit.root_dir = Some(root.clone());
+        kit.kit_file_name = Some("MyKit_full.xml".into());
+        kit.add_instrument("Kick");
+        kit.add_note(35);
+        kit.midimap.entries[0].instrument = "Kick".into();
+
+        save(&mut kit).unwrap();
+
+        assert!(root.join("MyKit_full.xml").exists());
+        assert!(root.join("Midimap_full.xml").exists());
+        assert!(!root.join("drumkit.xml").exists());
+        assert!(!root.join("midimap.xml").exists());
+
+        let loaded = DizmoKit::load(root.join("MyKit_full.xml")).unwrap();
+        assert_eq!(loaded.drums.name, "MyKit_full");
+        assert_eq!(loaded.default_midimap.as_deref(), Some("Midimap_full.xml"));
+
+        let midimap = loaded.load_midimap("Midimap_full.xml").unwrap();
+        assert_eq!(midimap.instrument_for_note(35), Some("Kick"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn fixture_kit_round_trips() {
         let fixture = fixture_drumkit();
         let (mut kit, warning) = load(&fixture).unwrap();
         assert!(
-            warning.is_none(),
-            "fixture kit should load without warnings"
+            warning.as_deref().unwrap_or("").contains("HihatClosed"),
+            "loading a kit with v1.0 instruments should warn about conversion: {warning:?}"
         );
 
         let root =
@@ -561,7 +786,8 @@ mod tests {
         assert_eq!(loaded.drums.description, kit.drumkit.description);
         assert_eq!(loaded.drums.samplerate, kit.drumkit.samplerate);
         assert_eq!(loaded.drums.version, kit.drumkit.version);
-        assert_eq!(loaded.default_midimap, kit.drumkit.default_midimap);
+        assert_eq!(loaded.drums.metadata, kit.drumkit.metadata);
+        assert_eq!(loaded.default_midimap, kit.default_midimap);
 
         assert_eq!(loaded.drums.channels.len(), kit.drumkit.channels.len());
         for (expected, actual) in kit.drumkit.channels.iter().zip(&loaded.drums.channels) {

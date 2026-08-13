@@ -4,9 +4,7 @@ use std::path::Path;
 
 use roxmltree::Node;
 
-use crate::xml::{
-    attr, metadata_attr, metadata_text, parse_bool, parse_f64, parse_u32, read_file, required_attr,
-};
+use crate::xml::{attr, parse_bool, parse_f64, parse_u32, read_file, required_attr};
 use crate::{ChannelMap, Choke, DEFAULT_CHOKETIME_MS, DEFAULT_SAMPLERATE, KitChannel, KitError};
 
 /// The parsed contents of a `drumkit.xml`, before the referenced instrument
@@ -17,8 +15,7 @@ pub struct DrumKit {
     pub samplerate: f64,
     pub name: String,
     pub description: String,
-    /// Relative path to the kit's default `midimap.xml`, if declared.
-    pub default_midimap: Option<String>,
+    pub metadata: KitMetadata,
     pub channels: Vec<KitChannel>,
     pub instrument_refs: Vec<InstrumentRef>,
 }
@@ -32,6 +29,38 @@ pub struct InstrumentRef {
     pub group: Option<String>,
     pub channel_map: Vec<ChannelMap>,
     pub chokes: Vec<Choke>,
+}
+
+/// Drumkit metadata from the `<metadata>` node. All fields are optional and
+/// mirror the DrumGizmo file format.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KitMetadata {
+    pub version: Option<String>,
+    pub title: Option<String>,
+    /// Path/URL of the kit logo image (`<logo src="..."/>`).
+    pub logo: Option<String>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub notes: Option<String>,
+    pub author: Option<String>,
+    pub email: Option<String>,
+    pub website: Option<String>,
+    pub image: Option<KitImage>,
+}
+
+/// An `<image>` element inside `<metadata>` with an optional click map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KitImage {
+    pub src: String,
+    pub map: Option<String>,
+    pub clickmap: Vec<ClickMap>,
+}
+
+/// One `<clickmap>` entry inside `<image>`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClickMap {
+    pub colour: String,
+    pub instrument: String,
 }
 
 pub fn parse_file(path: &Path) -> Result<DrumKit, KitError> {
@@ -50,13 +79,17 @@ pub fn parse_str(text: &str, path: &Path) -> Result<DrumKit, KitError> {
 
     // The modern format stores these in <metadata>; the old format used
     // attributes directly on the <drumkit> node.
-    let name = metadata_text(&drumkit, "title")
+    let metadata = parse_metadata(&drumkit);
+    let name = metadata
+        .title
+        .clone()
         .or_else(|| attr(&drumkit, "name"))
         .unwrap_or_default();
-    let description = metadata_text(&drumkit, "description")
+    let description = metadata
+        .description
+        .clone()
         .or_else(|| attr(&drumkit, "description"))
         .unwrap_or_default();
-    let default_midimap = metadata_attr(&drumkit, "defaultmidimap");
 
     let mut channels = Vec::new();
     for channel in children(drumkit, "channels", "channel") {
@@ -107,7 +140,7 @@ pub fn parse_str(text: &str, path: &Path) -> Result<DrumKit, KitError> {
         samplerate,
         name,
         description,
-        default_midimap,
+        metadata,
         channels,
         instrument_refs,
     })
@@ -165,4 +198,43 @@ fn parse_chokes(instrument: Node, path: &Path) -> Result<Vec<Choke>, KitError> {
             })
         })
         .collect()
+}
+
+/// Parses the `<metadata>` node of a drumkit. Unknown elements are ignored.
+fn parse_metadata(root: &Node) -> KitMetadata {
+    let Some(metadata) = root.children().find(|child| child.has_tag_name("metadata")) else {
+        return KitMetadata::default();
+    };
+
+    let mut result = KitMetadata::default();
+    for child in metadata.children().filter(|c| c.is_element()) {
+        match child.tag_name().name() {
+            "version" => result.version = child.text().map(str::to_owned),
+            "title" => result.title = child.text().map(str::to_owned),
+            "logo" => result.logo = attr(&child, "src"),
+            "description" => result.description = child.text().map(str::to_owned),
+            "license" => result.license = child.text().map(str::to_owned),
+            "notes" => result.notes = child.text().map(str::to_owned),
+            "author" => result.author = child.text().map(str::to_owned),
+            "email" => result.email = child.text().map(str::to_owned),
+            "website" => result.website = child.text().map(str::to_owned),
+            "image" => result.image = parse_image(&child),
+            _ => {}
+        }
+    }
+    result
+}
+
+fn parse_image(image: &Node) -> Option<KitImage> {
+    let src = attr(image, "src")?;
+    let map = attr(image, "map");
+    let clickmap: Vec<ClickMap> = image
+        .children()
+        .filter(|child| child.has_tag_name("clickmap"))
+        .map(|child| ClickMap {
+            colour: attr(&child, "colour").unwrap_or_default(),
+            instrument: attr(&child, "instrument").unwrap_or_default(),
+        })
+        .collect();
+    Some(KitImage { src, map, clickmap })
 }

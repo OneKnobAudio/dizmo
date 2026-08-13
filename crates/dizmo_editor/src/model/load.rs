@@ -31,7 +31,7 @@ pub fn load(file_path: &Path) -> Result<(EditorKit, Option<String>), KitError> {
         })
         .collect::<Vec<_>>();
 
-    let (midimap, warning) = match &kit.default_midimap {
+    let (midimap, mut warning) = match &kit.default_midimap {
         Some(relative) => match kit.load_midimap(relative) {
             Ok(map) => (map, None),
             Err(err) => (
@@ -42,13 +42,33 @@ pub fn load(file_path: &Path) -> Result<(EditorKit, Option<String>), KitError> {
         None => (MidiMap::default(), None),
     };
 
-    let mut drumkit = kit.drums;
-    drumkit.default_midimap = kit.default_midimap;
+    if kit.instruments.iter().any(|inst| !inst.is_v2()) {
+        let v1_names: Vec<String> = kit
+            .instruments
+            .iter()
+            .filter(|inst| !inst.is_v2())
+            .map(|inst| inst.name.clone())
+            .collect();
+        let message = format!(
+            "This kit contains v1.0 instruments ({}). Saving will convert them to v2.0.",
+            v1_names.join(", ")
+        );
+        warning = Some(match warning {
+            Some(existing) => format!("{existing} {message}"),
+            None => message,
+        });
+    }
+
+    let kit_file_name = file_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
 
     Ok((
         EditorKit {
             root_dir: Some(kit.root_dir),
-            drumkit,
+            kit_file_name,
+            default_midimap: kit.default_midimap,
+            drumkit: kit.drums,
             instruments,
             midimap,
             dirty: false,
