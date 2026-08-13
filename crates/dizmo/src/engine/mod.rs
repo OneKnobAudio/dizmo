@@ -43,6 +43,16 @@ const RETRIGGER_FADE_MS: f32 = 1.0;
 /// drum hit is not audibly dulled by such a short ramp.
 const ATTACK_FADE_MS: f32 = 1.0;
 
+/// Choke-group rampdown: when an instrument with a `group` is hit, every
+/// ringing voice of the *other* instruments in that group is faded out over a
+/// fixed 68 ms (DrumGizmo's `applyChokeGroup`).
+const GROUP_CHOKE_MS: u32 = 68;
+
+/// Polyphonic aftertouch choke: a pressure above zero fades out the mapped
+/// instrument's ringing voices over a fixed 450 ms (DrumGizmo's
+/// `processChoke`).
+const AFTERTOUCH_CHOKE_MS: u32 = 450;
+
 /// The drum engine: note in -> voice playback into per-kit-channel mono output.
 pub struct Engine {
     kit: Arc<DizmoKit>,
@@ -71,8 +81,11 @@ struct Voice {
     streams: Vec<VoiceStream>,
     position: f32,
     gain: f32,
+    /// The full-gain target of the attack ramp: 1.0, or the hit's velocity for
+    /// normalized samples (DG's `normalized_samples` scaling).
+    base_gain: f32,
     /// Frames left in the initial fade-in from silence; `0` once the voice is
-    /// at full gain. The attack ramps `gain` up at [`ATTACK_FADE_MS`].
+    /// at [`Voice::base_gain`]. The attack ramps `gain` up at [`ATTACK_FADE_MS`].
     attack_remaining: f32,
     /// Per-frame linear gain increment while in the attack ramp; `0` otherwise.
     attack_step: f32,
@@ -156,8 +169,10 @@ impl Engine {
         self.sample_rate = sample_rate;
     }
 
-    /// Handles a MIDI note-on: cuts the instrument's choke targets (and its own
-    /// previous voice), then starts a new voice.
+    /// Handles a MIDI note-on: applies the instrument's choke group (a fixed
+    /// 68 ms ramp over the other instruments in its group), cuts the
+    /// instrument's directed choke targets, fades out its own previous voice,
+    /// then starts a new voice.
     pub fn note_on(&mut self, note: u8, velocity: u8) {
         let Some(instrument_name) = self.midimap.instrument_for_note(note) else {
             return;
@@ -165,6 +180,13 @@ impl Engine {
         let Some(instrument_index) = self.instrument_index.get(instrument_name).copied() else {
             return;
         };
+
+        // Group choke first (DG order): a victim that is both in the group
+        // and a directed choke target keeps the group's 68 ms ramp, because
+        // chokes only apply to voices that are not already ramping.
+        if let Some(group) = self.kit.instruments[instrument_index].group.clone() {
+            self.choke_group(&group, GROUP_CHOKE_MS, instrument_index);
+        }
 
         let chokes = self.kit.instruments[instrument_index].chokes.clone();
         for choke in &chokes {
@@ -177,6 +199,19 @@ impl Engine {
         self.choke_instrument(instrument_index, RETRIGGER_FADE_MS as u32);
 
         self.trigger(instrument_index, velocity as f32 / 127.0);
+    }
+
+    /// Handles polyphonic aftertouch (key pressure). Like DrumGizmo, a
+    /// pressure above zero chokes the instrument mapped to `note`: all its
+    /// ringing voices fade out over a fixed 450 ms.
+    pub fn aftertouch(&mut self, note: u8) {
+        let Some(instrument_name) = self.midimap.instrument_for_note(note) else {
+            return;
+        };
+        let Some(&instrument_index) = self.instrument_index.get(instrument_name) else {
+            return;
+        };
+        self.choke_instrument(instrument_index, AFTERTOUCH_CHOKE_MS);
     }
 
     /// Handles a MIDI note-off. For drum samplers, note-offs are typically
@@ -225,7 +260,14 @@ impl Engine {
                 let read_to = (start + frames).min(data.len());
                 let out_buffer = &mut out[stream.output];
                 for (frame, &value) in data[start..read_to].iter().enumerate() {
-                    let gain = (gain_start + gain_step * frame as f32).clamp(0.0, 1.0);
+                    let mut gain = (gain_start + gain_step * frame as f32).clamp(0.0, 1.0);
+                    // While the attack ramp is still running, cap the gain at
+                    // the voice's target: normalized samples ramp to their
+                    // velocity-scaled gain, not to 1.0. (Fades never overlap
+                    // the attack: they clear `attack_step` first.)
+                    if voice.attack_step > 0.0 {
+                        gain = gain.min(voice.base_gain);
+                    }
                     out_buffer[offset + frame] += value * gain;
                 }
             }
@@ -235,9 +277,9 @@ impl Engine {
             if voice.attack_remaining > 0.0 {
                 voice.attack_remaining -= frames as f32;
                 if voice.attack_remaining <= 0.0 {
-                    // The ramp reached full gain; stop advancing it.
+                    // The ramp reached its target gain; stop advancing it.
                     voice.attack_step = 0.0;
-                    voice.gain = 1.0;
+                    voice.gain = voice.base_gain;
                 }
             }
             if voice.fade_step > 0.0 && voice.gain <= 0.0 {
@@ -303,6 +345,12 @@ impl Engine {
             return;
         }
 
+        // DG's normalized-sample scaling (`normalized_samples` defaults to
+        // true in DG): a sample marked `normalized` plays at the hit's
+        // velocity instead of at full gain.
+        let normalized = self.kit.instruments[instrument_index].samples[sample_index].normalized;
+        let base_gain = if normalized { velocity } else { 1.0 };
+
         if self.voices.len() >= MAX_VOICES {
             // Fade out the oldest voice instead of cutting it, so stealing a
             // ringing voice does not click. The faded voice expires within
@@ -314,7 +362,7 @@ impl Engine {
         }
 
         let attack_frames = attack_fade_frames(self.sample_rate);
-        let attack_step = 1.0 / attack_frames.max(1.0);
+        let attack_step = base_gain / attack_frames.max(1.0);
         self.voices.push(Voice {
             instrument: instrument_index,
             streams,
@@ -322,6 +370,7 @@ impl Engine {
             // The ramp starts just above silence (frame 0 is `attack_step`) so
             // a sample that begins at a non-zero crossing steps in softly.
             gain: attack_step,
+            base_gain,
             attack_remaining: attack_frames,
             attack_step,
             fade_step: 0.0,
@@ -488,6 +537,36 @@ impl Engine {
             if voice.instrument != instrument_index || voice.finished || voice.fade_step > 0.0 {
                 continue;
             }
+            if fade_frames <= 1.0 {
+                voice.finished = true;
+            } else {
+                end_attack(voice);
+                voice.fade_step = voice.gain / fade_frames;
+            }
+        }
+    }
+
+    /// Fades out every ringing voice whose instrument shares `group` (DG's
+    /// choke groups). `exclude` is the instrument whose hit triggered the
+    /// choke: its own voices are left for the self-choke/retrigger fade, and
+    /// voices already ramping are not touched, matching DG's
+    /// "only if not already ramping" rule.
+    fn choke_group(&mut self, group: &str, choketime_ms: u32, exclude: usize) {
+        let fade_frames = choketime_ms as f32 / 1000.0 * self.sample_rate;
+        let victims: Vec<usize> = self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, voice)| {
+                voice.instrument != exclude
+                    && !voice.finished
+                    && voice.fade_step <= 0.0
+                    && self.kit.instruments[voice.instrument].group.as_deref() == Some(group)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in victims {
+            let voice = &mut self.voices[index];
             if fade_frames <= 1.0 {
                 voice.finished = true;
             } else {

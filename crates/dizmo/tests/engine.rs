@@ -457,6 +457,127 @@ fn choke_fades_target_over_choketime() {
 }
 
 #[test]
+fn choke_group_fades_other_instruments_in_the_group() {
+    let drumkit = r#"<drumkit version="2.0">
+  <metadata><title>T</title><description>d</description></metadata>
+  <channels>
+    <channel name="Open"/>
+    <channel name="Closed"/>
+  </channels>
+  <instruments>
+    <instrument name="Open" file="inst_open.xml" group="hihat">
+      <channelmap in="Open" out="Open" main="true"/>
+    </instrument>
+    <instrument name="Closed" file="inst_closed.xml" group="hihat">
+      <channelmap in="Closed" out="Closed" main="true"/>
+    </instrument>
+  </instruments>
+</drumkit>
+"#;
+    let midimap = r#"<midimap>
+  <map note="42" instr="Closed"/>
+  <map note="46" instr="Open"/>
+</midimap>
+"#;
+    let dir = setup(
+        "choke-group",
+        drumkit,
+        &[
+            ("inst_open.xml", OPEN_INST),
+            ("inst_closed.xml", CLOSED_INST),
+            ("midimap.xml", midimap),
+        ],
+        &[
+            ("open.wav", 1, &[1000; 200]),
+            ("closed.wav", 1, &[777, 888, 999]),
+        ],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+    // 1 kHz sample rate => the group's fixed 68 ms choke is exactly 68 frames.
+    engine.set_sample_rate(1000.0);
+
+    engine.note_on(46, 127);
+    let out = run(&mut engine, 2, 2);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(out[0][1], 1000.0 / 32768.0));
+
+    // Hitting the Closed hihat chokes the Open hihat through their shared
+    // group: the Open voice ramps down 1/68 of its gain per frame (DG's ramp
+    // keeps the first frame at full gain).
+    engine.note_on(42, 127);
+    let out = run(&mut engine, 2, 2);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(out[0][1], 1000.0 * (67.0 / 68.0) / 32768.0));
+    assert!(approx(out[1][0], 777.0 / 32768.0));
+}
+
+#[test]
+fn aftertouch_chokes_the_instrument_over_450_ms() {
+    let dir = setup(
+        "aftertouch",
+        DRUMKIT,
+        &[("inst_kick.xml", INST_KICK), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000; 600])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+    // 1 kHz sample rate => the 450 ms aftertouch choke is exactly 450 frames.
+    engine.set_sample_rate(1000.0);
+
+    engine.note_on(36, 127);
+    let out = run(&mut engine, 1, 1);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+
+    engine.aftertouch(36);
+    assert_eq!(engine.active_voices(), 1);
+
+    // The voice fades linearly: 1/450 of its gain per frame. Like DG's ramp,
+    // the first frame of the fade still renders at full gain.
+    let step = 1.0f32 / 450.0f32;
+    let out = run(&mut engine, 1, 2);
+    assert!(approx(out[0][0], 1000.0 / 32768.0));
+    assert!(approx(out[0][1], 1000.0 * (1.0 - step) / 32768.0));
+
+    // The fade reaches silence within its 450 frames and the voice is removed
+    // (the 600-frame sample is long enough that only the fade ends it).
+    let out = run(&mut engine, 1, 451);
+    assert_eq!(out[0][450], 0.0);
+    assert_eq!(engine.active_voices(), 0);
+}
+
+#[test]
+fn normalized_samples_scale_with_velocity() {
+    let inst = r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1" normalized="true">
+      <audiofile channel="Kick" file="kick.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>"#;
+    let dir = setup(
+        "normalized",
+        DRUMKIT,
+        &[("inst_kick.xml", inst), ("midimap.xml", MIDIMAP)],
+        &[("kick.wav", 1, &[1000; 10])],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+    // 2 kHz sample rate => the 1 ms attack is exactly 2 frames, so the ramp
+    // gains are base/2 and base.
+    engine.set_sample_rate(2000.0);
+
+    // A normalized sample plays at the hit's velocity: 64/127 of full gain.
+    engine.note_on(36, 64);
+    let base = 64.0 / 127.0;
+    let out = run(&mut engine, 1, 4);
+    assert!(approx(out[0][0], 1000.0 / 32768.0 * (base * 0.5)));
+    assert!(approx(out[0][1], 1000.0 / 32768.0 * base));
+    assert!(approx(out[0][2], 1000.0 / 32768.0 * base));
+    assert!(approx(out[0][3], 1000.0 / 32768.0 * base));
+}
+
+#[test]
 fn retrigger_fades_previous_voice_instead_of_cutting() {
     let dir = setup(
         "retrigger",

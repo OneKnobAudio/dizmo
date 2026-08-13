@@ -631,6 +631,11 @@ impl DizmoPlugin {
                 NoteEvent::MidiCC { cc: 123, .. } => {
                     engine.all_notes_off();
                 }
+                NoteEvent::PolyPressure { note, pressure, .. } if pressure > 0.0 => {
+                    // DG: poly aftertouch with pressure > 0 chokes the note's
+                    // instrument (fixed 450 ms rampdown).
+                    engine.aftertouch(note);
+                }
                 _ => {}
             }
         }
@@ -715,6 +720,11 @@ impl DizmoMultiPlugin {
                 }
                 NoteEvent::MidiCC { cc: 123, .. } => {
                     engine.all_notes_off();
+                }
+                NoteEvent::PolyPressure { note, pressure, .. } if pressure > 0.0 => {
+                    // DG: poly aftertouch with pressure > 0 chokes the note's
+                    // instrument (fixed 450 ms rampdown).
+                    engine.aftertouch(note);
                 }
                 _ => {}
             }
