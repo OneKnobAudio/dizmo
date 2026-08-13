@@ -47,12 +47,33 @@ pub enum Message {
     KitName(String),
     KitDescription(String),
     KitSamplerate(String),
+    KitMetadataVersion(String),
+    KitMetadataLogo(String),
+    KitMetadataLicense(String),
+    KitMetadataNotes(String),
+    KitMetadataAuthor(String),
+    KitMetadataEmail(String),
+    KitMetadataWebsite(String),
+    KitMetadataImage(String),
+    KitMetadataImageMap(String),
+    ClickmapColour(usize, String),
+    ClickmapInstrument(usize, String),
+    AddClickmap,
+    RemoveClickmap(usize),
+    SaveAsConfirmed,
+    SaveAsCancel,
     AddChannel,
     RemoveChannel(usize),
     RenameChannel(usize, String),
     AddInstrument,
     RemoveInstrument(usize),
     RenameInstrument(usize, String),
+    InstrumentGroup(usize, String),
+    InstrumentDescription(usize, String),
+    ChokeInstrument(usize, usize, Option<usize>),
+    ChokeChoketime(usize, usize, String),
+    AddChoke(usize),
+    RemoveChoke(usize, usize),
     ToggleChannelAssignment(usize, String),
     SetChannelMain(usize, String, bool),
     RemoveSample(usize, usize),
@@ -178,12 +199,31 @@ impl App {
             Message::Save => return self.start_save(),
             Message::SaveAs => return self.pick_save_dir(),
             Message::SaveAsPicked(Some(dir)) => {
-                if let Some(kit) = &mut self.kit {
+                // Saving into a non-empty directory may overwrite files, so
+                // ask for confirmation first.
+                let non_empty = std::fs::read_dir(&dir)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false);
+                if non_empty {
+                    self.modal = Some(Modal::ConfirmOverwrite(dir));
+                } else if let Some(kit) = &mut self.kit {
                     kit.root_dir = Some(dir);
+                    return self.start_save();
                 }
-                return self.start_save();
             }
             Message::SaveAsPicked(None) => {}
+            Message::SaveAsConfirmed => {
+                let dir = match &self.modal {
+                    Some(Modal::ConfirmOverwrite(dir)) => dir.clone(),
+                    _ => return Task::none(),
+                };
+                self.modal = None;
+                if let Some(kit) = &mut self.kit {
+                    kit.root_dir = Some(dir);
+                    return self.start_save();
+                }
+            }
+            Message::SaveAsCancel => self.modal = None,
             Message::Saved(result) => match *result {
                 Ok(kit) => {
                     self.samplerate_text = kit.drumkit.samplerate.to_string();
@@ -269,6 +309,161 @@ impl App {
             Message::RenameInstrument(i, name) => {
                 if let Some(kit) = &mut self.kit {
                     kit.rename_instrument(i, &name);
+                }
+            }
+            Message::InstrumentGroup(i, group) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.set_instrument_group(i, &group);
+                }
+            }
+            Message::InstrumentDescription(i, description) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.set_instrument_description(i, &description);
+                }
+            }
+            Message::ChokeInstrument(instrument, choke, target) => {
+                if let Some(kit) = &mut self.kit
+                    && let Some(name) = target
+                        .and_then(|i| kit.instruments.get(i))
+                        .map(|inst| inst.reference.name.clone())
+                    && let Some(inst) = kit.instruments.get(instrument)
+                    && let Some(c) = inst.reference.chokes.get(choke)
+                    && c.instrument != name
+                {
+                    let choketime_ms = inst.reference.chokes[choke].choketime_ms;
+                    kit.remove_choke(instrument, choke);
+                    match kit.add_choke(instrument, &name, choketime_ms) {
+                        Ok(()) => {}
+                        Err(error) => self.status = Some(error),
+                    }
+                }
+            }
+            Message::ChokeChoketime(instrument, choke, value) => {
+                if let (Ok(ms), Some(kit)) = (value.parse::<u32>(), &mut self.kit) {
+                    kit.set_choke_choketime(instrument, choke, ms);
+                }
+            }
+            Message::AddChoke(instrument) => {
+                if let Some(kit) = &mut self.kit {
+                    let Some(inst) = kit.instruments.get(instrument) else {
+                        return Task::none();
+                    };
+                    let Some(target) = kit
+                        .instruments
+                        .iter()
+                        .find(|other| other.reference.name != inst.reference.name)
+                        .map(|other| other.reference.name.clone())
+                    else {
+                        self.status = Some(
+                            "Add another instrument first — an instrument cannot choke itself."
+                                .into(),
+                        );
+                        return Task::none();
+                    };
+                    match kit.add_choke(instrument, &target, 68) {
+                        Ok(()) => {}
+                        Err(error) => self.status = Some(error),
+                    }
+                }
+            }
+            Message::RemoveChoke(instrument, choke) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.remove_choke(instrument, choke);
+                }
+            }
+            Message::KitMetadataVersion(value) => {
+                self.edit_metadata_string(|m| &mut m.version, value)
+            }
+            Message::KitMetadataLogo(value) => self.edit_metadata_string(|m| &mut m.logo, value),
+            Message::KitMetadataLicense(value) => {
+                self.edit_metadata_string(|m| &mut m.license, value)
+            }
+            Message::KitMetadataNotes(value) => self.edit_metadata_string(|m| &mut m.notes, value),
+            Message::KitMetadataAuthor(value) => {
+                self.edit_metadata_string(|m| &mut m.author, value)
+            }
+            Message::KitMetadataEmail(value) => self.edit_metadata_string(|m| &mut m.email, value),
+            Message::KitMetadataWebsite(value) => {
+                self.edit_metadata_string(|m| &mut m.website, value)
+            }
+            Message::KitMetadataImage(value) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.edit_metadata(|metadata| {
+                        if value.trim().is_empty()
+                            && metadata
+                                .image
+                                .as_ref()
+                                .is_some_and(|image| image.clickmap.is_empty())
+                        {
+                            metadata.image = None;
+                        } else {
+                            let image = metadata.image.get_or_insert_with(|| dizmo_kit::KitImage {
+                                src: String::new(),
+                                map: None,
+                                clickmap: Vec::new(),
+                            });
+                            image.src = value;
+                        }
+                    });
+                }
+            }
+            Message::KitMetadataImageMap(value) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.edit_metadata(|metadata| {
+                        if let Some(image) = &mut metadata.image {
+                            image.map = if value.trim().is_empty() {
+                                None
+                            } else {
+                                Some(value)
+                            };
+                        }
+                    });
+                }
+            }
+            Message::ClickmapColour(row, value) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.edit_metadata(|metadata| {
+                        if let Some(image) = &mut metadata.image
+                            && let Some(clickmap) = image.clickmap.get_mut(row)
+                        {
+                            clickmap.colour = value;
+                        }
+                    });
+                }
+            }
+            Message::ClickmapInstrument(row, value) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.edit_metadata(|metadata| {
+                        if let Some(image) = &mut metadata.image
+                            && let Some(clickmap) = image.clickmap.get_mut(row)
+                        {
+                            clickmap.instrument = value;
+                        }
+                    });
+                }
+            }
+            Message::AddClickmap => {
+                if let Some(kit) = &mut self.kit {
+                    kit.edit_metadata(|metadata| {
+                        let image = metadata.image.get_or_insert_with(|| dizmo_kit::KitImage {
+                            src: String::new(),
+                            map: None,
+                            clickmap: Vec::new(),
+                        });
+                        image.clickmap.push(dizmo_kit::ClickMap {
+                            colour: String::new(),
+                            instrument: String::new(),
+                        });
+                    });
+                }
+            }
+            Message::RemoveClickmap(row) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.edit_metadata(|metadata| {
+                        if let Some(image) = &mut metadata.image {
+                            image.clickmap.remove(row);
+                        }
+                    });
                 }
             }
             Message::ToggleChannelAssignment(i, channel) => {
@@ -423,6 +618,24 @@ impl App {
         self.previewing = None;
     }
 
+    /// Edits one optional kit metadata string field; an empty value clears it.
+    fn edit_metadata_string(
+        &mut self,
+        field: fn(&mut dizmo_kit::KitMetadata) -> &mut Option<String>,
+        value: String,
+    ) {
+        if let Some(kit) = &mut self.kit {
+            kit.edit_metadata(|metadata| {
+                let target = field(metadata);
+                *target = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value)
+                };
+            });
+        }
+    }
+
     /// Runs a save on a cloned kit off the UI thread; on success the mutated
     /// (normalized) kit replaces the live one.
     fn start_save(&self) -> Task<Message> {
@@ -447,6 +660,7 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         match &self.modal {
             Some(Modal::NewKit(draft)) => modal::new_kit_modal(draft),
+            Some(Modal::ConfirmOverwrite(dir)) => modal::confirm_overwrite_modal(dir),
             None => match &self.kit {
                 Some(kit) => self.editor_view(kit),
                 None => panels::welcome(),

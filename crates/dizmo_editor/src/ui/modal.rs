@@ -1,4 +1,6 @@
-//! Modal dialogs. Only the New Kit dialog exists in the skeleton.
+//! Modal dialogs: the New Kit dialog and the Save-As overwrite confirmation.
+
+use std::path::{Path, PathBuf};
 
 use iced::widget::{
     Space, button, column, container, mouse_area, row, scrollable, text, text_input,
@@ -21,6 +23,7 @@ pub enum ModalMessage {
 
 pub enum Modal {
     NewKit(NewKitDraft),
+    ConfirmOverwrite(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +114,39 @@ pub fn new_kit_modal<'a>(draft: &'a NewKitDraft) -> Element<'a, Message> {
     .style(panel_style);
 
     dialog_stack(panel, Message::NewKitCancel)
+}
+
+/// Asks for confirmation before saving into a directory that already has
+/// contents (files may be overwritten).
+pub fn confirm_overwrite_modal<'a>(dir: &'a Path) -> Element<'a, Message> {
+    let panel = container(
+        column![
+            text("Overwrite?").size(16).color(TEXT),
+            text("The chosen directory is not empty:")
+                .size(11)
+                .color(TEXT_DIM),
+            text(dir.display().to_string()).size(11).color(TEXT),
+            text("Saving may overwrite existing files.")
+                .size(11)
+                .color(TEXT_DIM),
+            row![
+                button(text("Cancel"))
+                    .on_press(Message::SaveAsCancel)
+                    .style(pill(false)),
+                button(text("Save anyway"))
+                    .on_press(Message::SaveAsConfirmed)
+                    .style(pill(true)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .width(Length::Fixed(360.0)),
+    )
+    .width(Length::Fixed(400.0))
+    .padding(20)
+    .style(panel_style);
+
+    dialog_stack(panel, Message::SaveAsCancel)
 }
 
 fn dialog_stack<'a>(

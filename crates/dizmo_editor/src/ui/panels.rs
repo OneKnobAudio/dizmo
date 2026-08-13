@@ -51,11 +51,106 @@ pub fn kit_panel<'a>(kit: &'a EditorKit, samplerate_text: &'a str) -> Element<'a
         ),
         field("Sample rate", samplerate_text, Message::KitSamplerate),
         iced::widget::rule::horizontal(1.0),
+        text("Metadata").size(12).color(TEXT),
+        field(
+            "Version",
+            kit.drumkit.metadata.version.as_deref().unwrap_or(""),
+            Message::KitMetadataVersion,
+        ),
+        field(
+            "Logo",
+            kit.drumkit.metadata.logo.as_deref().unwrap_or(""),
+            Message::KitMetadataLogo,
+        ),
+        field(
+            "License",
+            kit.drumkit.metadata.license.as_deref().unwrap_or(""),
+            Message::KitMetadataLicense,
+        ),
+        field(
+            "Notes",
+            kit.drumkit.metadata.notes.as_deref().unwrap_or(""),
+            Message::KitMetadataNotes,
+        ),
+        field(
+            "Author",
+            kit.drumkit.metadata.author.as_deref().unwrap_or(""),
+            Message::KitMetadataAuthor,
+        ),
+        field(
+            "Email",
+            kit.drumkit.metadata.email.as_deref().unwrap_or(""),
+            Message::KitMetadataEmail,
+        ),
+        field(
+            "Website",
+            kit.drumkit.metadata.website.as_deref().unwrap_or(""),
+            Message::KitMetadataWebsite,
+        ),
+        field(
+            "Image",
+            kit.drumkit
+                .metadata
+                .image
+                .as_ref()
+                .map(|image| image.src.as_str())
+                .unwrap_or(""),
+            Message::KitMetadataImage,
+        ),
+        field(
+            "Image map",
+            kit.drumkit
+                .metadata
+                .image
+                .as_ref()
+                .and_then(|image| image.map.as_deref())
+                .unwrap_or(""),
+            Message::KitMetadataImageMap,
+        ),
+        iced::widget::rule::horizontal(1.0),
         text("Output channels  ·  workflow step 1")
             .size(12)
             .color(TEXT),
     ]
     .spacing(8);
+
+    let clickmaps = match &kit.drumkit.metadata.image {
+        Some(image) if !image.clickmap.is_empty() => {
+            let mut rows = column![].spacing(4);
+            for (row, clickmap) in image.clickmap.iter().enumerate() {
+                rows = rows.push(
+                    row![
+                        text_input("colour", &clickmap.colour)
+                            .on_input(move |value| Message::ClickmapColour(row, value))
+                            .style(text_input_style)
+                            .width(Length::Fill),
+                        text_input("instrument", &clickmap.instrument)
+                            .on_input(move |value| Message::ClickmapInstrument(row, value))
+                            .style(text_input_style)
+                            .width(Length::Fill),
+                        button(text("×"))
+                            .on_press(Message::RemoveClickmap(row))
+                            .style(danger_button_style),
+                    ]
+                    .spacing(6),
+                );
+            }
+            rows
+        }
+        _ => column![].spacing(4),
+    };
+    content = content.push(
+        column![
+            text("Click map  ·  colour + instrument")
+                .size(11)
+                .color(TEXT_DIM),
+            clickmaps,
+            button(text("+ Add clickmap"))
+                .on_press(Message::AddClickmap)
+                .style(pill(false)),
+        ]
+        .spacing(4),
+    );
 
     if kit.drumkit.channels.is_empty() {
         content = content.push(
@@ -153,6 +248,50 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
         );
     }
 
+    let instrument_names: Vec<String> = kit
+        .instruments
+        .iter()
+        .map(|i| i.reference.name.clone())
+        .collect();
+    let mut chokes = column![].spacing(4);
+    if inst.reference.chokes.is_empty() {
+        chokes = chokes.push(
+            text("No chokes — nothing cuts this instrument.")
+                .size(11)
+                .color(TEXT_DIM),
+        );
+    }
+    for (c, choke) in inst.reference.chokes.iter().enumerate() {
+        let options = instrument_names.clone();
+        let selected = options
+            .iter()
+            .find(|name| **name == choke.instrument)
+            .cloned();
+        chokes = chokes.push(
+            row![
+                pick_list(options.clone(), selected, move |picked: String| {
+                    Message::ChokeInstrument(
+                        index,
+                        c,
+                        options.iter().position(|option| option == &picked),
+                    )
+                })
+                .placeholder("Target")
+                .style(pick_list_style)
+                .menu_style(menu_style)
+                .width(Length::Fill),
+                text_input("ms", &choke.choketime_ms.to_string())
+                    .on_input(move |value| Message::ChokeChoketime(index, c, value))
+                    .style(text_input_style)
+                    .width(Length::Fixed(70.0)),
+                button(text("×"))
+                    .on_press(Message::RemoveChoke(index, c))
+                    .style(danger_button_style),
+            ]
+            .spacing(6),
+        );
+    }
+
     let mut samples = column![].spacing(4);
     if inst.instrument.samples.is_empty() {
         samples = samples.push(
@@ -182,6 +321,16 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
         field("Instrument name", &inst.reference.name, move |name| {
             Message::RenameInstrument(index, name)
         },),
+        field(
+            "Group",
+            inst.reference.group.as_deref().unwrap_or(""),
+            move |group| Message::InstrumentGroup(index, group),
+        ),
+        field(
+            "Description",
+            &inst.instrument.description,
+            move |description| Message::InstrumentDescription(index, description),
+        ),
         column![
             text("Channel map  ·  workflow step 4")
                 .size(11)
@@ -189,6 +338,14 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
             channel_map,
         ]
         .spacing(4),
+        iced::widget::rule::horizontal(1.0),
+        text("Chokes  ·  cut these instruments on trigger")
+            .size(11)
+            .color(TEXT_DIM),
+        chokes,
+        button(text("+ Add choke"))
+            .on_press(Message::AddChoke(index))
+            .style(pill(false)),
         iced::widget::rule::horizontal(1.0),
         text("Samples").size(12).color(TEXT),
         samples,

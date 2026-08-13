@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use dizmo_kit::drumkit::InstrumentRef;
 use dizmo_kit::{
-    AudioFile, ChannelMap, DrumKit, Instrument, InstrumentChannel, KitChannel, KitMetadata,
+    AudioFile, ChannelMap, Choke, DrumKit, Instrument, InstrumentChannel, KitChannel, KitMetadata,
     MidiMap, MidiMapEntry, Sample,
 };
 
@@ -132,6 +132,120 @@ impl EditorKit {
         self.dirty = true;
     }
 
+    /// Sets the instrument's drumkit group (empty string clears it).
+    pub fn set_instrument_group(&mut self, index: usize, group: &str) {
+        let Some(inst) = self.instruments.get_mut(index) else {
+            return;
+        };
+        let group = group.trim().to_string();
+        let group = if group.is_empty() { None } else { Some(group) };
+        if inst.reference.group == group {
+            return;
+        }
+        inst.reference.group = group;
+        self.sync_reference(index);
+        self.dirty = true;
+    }
+
+    /// Sets the instrument description (kept in sync with its `<metadata>`
+    /// description so the saved file stays coherent).
+    pub fn set_instrument_description(&mut self, index: usize, description: &str) {
+        let Some(inst) = self.instruments.get_mut(index) else {
+            return;
+        };
+        if inst.instrument.description == description {
+            return;
+        }
+        inst.instrument.description = description.to_string();
+        inst.instrument.metadata.description = Some(description.to_string());
+        self.dirty = true;
+    }
+
+    /// Adds a choke on `instrument` (the target's canonical name). Fails when
+    /// the target is empty, is the instrument itself, or is already choked.
+    pub fn add_choke(
+        &mut self,
+        index: usize,
+        instrument: &str,
+        choketime_ms: u32,
+    ) -> Result<(), String> {
+        let Some(inst) = self.instruments.get_mut(index) else {
+            return Err("Instrument not found.".to_string());
+        };
+        let instrument = instrument.trim();
+        if instrument.is_empty() {
+            return Err("Pick a choke target.".to_string());
+        }
+        if instrument == inst.reference.name {
+            return Err("An instrument cannot choke itself.".to_string());
+        }
+        if inst
+            .reference
+            .chokes
+            .iter()
+            .any(|c| c.instrument == instrument)
+        {
+            return Err(format!("'{instrument}' is already choked."));
+        }
+        inst.reference.chokes.push(Choke {
+            instrument: instrument.to_string(),
+            choketime_ms,
+        });
+        self.sync_reference(index);
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub fn remove_choke(&mut self, index: usize, choke: usize) {
+        let Some(inst) = self.instruments.get_mut(index) else {
+            return;
+        };
+        if choke < inst.reference.chokes.len() {
+            inst.reference.chokes.remove(choke);
+            self.sync_reference(index);
+            self.dirty = true;
+        }
+    }
+
+    pub fn set_choke_choketime(&mut self, index: usize, choke: usize, choketime_ms: u32) {
+        let Some(inst) = self.instruments.get_mut(index) else {
+            return;
+        };
+        let Some(c) = inst.reference.chokes.get_mut(choke) else {
+            return;
+        };
+        if c.choketime_ms != choketime_ms {
+            c.choketime_ms = choketime_ms;
+            self.sync_reference(index);
+            self.dirty = true;
+        }
+    }
+
+    /// Applies `update` to the kit `<metadata>` and marks the kit dirty when
+    /// something actually changed.
+    pub fn edit_metadata(&mut self, update: impl FnOnce(&mut KitMetadata)) {
+        let before = self.drumkit.metadata.clone();
+        update(&mut self.drumkit.metadata);
+        if self.drumkit.metadata != before {
+            self.dirty = true;
+        }
+    }
+
+    /// Keeps the drumkit's instrument reference in sync with the instrument's
+    /// own copy (channel map, chokes, group).
+    fn sync_reference(&mut self, index: usize) {
+        let Some(inst) = self.instruments.get_mut(index) else {
+            return;
+        };
+        inst.instrument.channel_map = inst.reference.channel_map.clone();
+        inst.instrument.chokes = inst.reference.chokes.clone();
+        if let Some(reference) = self.drumkit.instrument_refs.get_mut(index) {
+            reference.channel_map = inst.reference.channel_map.clone();
+            reference.chokes = inst.reference.chokes.clone();
+            reference.group = inst.reference.group.clone();
+        }
+    }
+
     /// Toggles whether a kit channel is assigned to this instrument. When
     /// assigned, an instrument channel and a 1:1 channel map are created; when
     /// unassigned, both are removed. Each kit channel can be assigned at most
@@ -187,10 +301,7 @@ impl EditorKit {
         };
         if map.is_main != is_main {
             map.is_main = is_main;
-            inst.instrument.channel_map = inst.reference.channel_map.clone();
-            if let Some(reference) = self.drumkit.instrument_refs.get_mut(instrument) {
-                reference.channel_map = inst.reference.channel_map.clone();
-            }
+            self.sync_reference(instrument);
             self.dirty = true;
         }
     }
