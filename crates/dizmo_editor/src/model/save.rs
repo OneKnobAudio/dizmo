@@ -129,14 +129,14 @@ fn plan_instrument(inst: &EditorInstrument, root: &Path) -> Result<InstrumentPla
     for sample in &inst.instrument.samples {
         for audio in &sample.audio_files {
             let source = inst.instrument.base_dir.join(&audio.file);
-            let key = source
-                .canonicalize()
-                .unwrap_or_else(|_| source.clone());
+            let key = source.canonicalize().unwrap_or_else(|_| source.clone());
 
             let rel = if let Some(existing) = source_dest.get(&key) {
                 existing.clone()
             } else if is_inside(&source, root) {
-                let rel = relative_to(&folder, &source).to_string_lossy().replace('\\', "/");
+                let rel = relative_to(&folder, &source)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 source_dest.insert(key, rel.clone());
                 rel
             } else {
@@ -180,8 +180,7 @@ fn is_inside(path: &Path, root: &Path) -> bool {
 
 /// The relative path from `base` to `target`, using `..` segments as needed.
 fn relative_to(base: &Path, target: &Path) -> PathBuf {
-    let base_parts: Vec<&std::ffi::OsStr> =
-        base.components().map(Component::as_os_str).collect();
+    let base_parts: Vec<&std::ffi::OsStr> = base.components().map(Component::as_os_str).collect();
     let target_parts: Vec<&std::ffi::OsStr> =
         target.components().map(Component::as_os_str).collect();
     let common = base_parts
@@ -220,7 +219,11 @@ fn unique_name(base: &str, taken: &mut HashMap<String, ()>) -> String {
     }
 }
 
-fn serialize_drumkit(drumkit: &DrumKit, instrument_files: &[String], midimap: Option<&str>) -> String {
+fn serialize_drumkit(
+    drumkit: &DrumKit,
+    instrument_files: &[String],
+    midimap: Option<&str>,
+) -> String {
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str(&format!(
@@ -300,7 +303,11 @@ fn serialize_instrument(inst: &Instrument, audio_paths: &[String]) -> String {
     ));
     out.push_str("  <channels>\n");
     for channel in &inst.channels {
-        let main = if channel.is_main { " main=\"true\"" } else { "" };
+        let main = if channel.is_main {
+            " main=\"true\""
+        } else {
+            ""
+        };
         out.push_str(&format!(
             "    <channel name=\"{}\"{main}/>\n",
             esc(&channel.name)
@@ -397,7 +404,18 @@ fn esc(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::load::load;
     use dizmo_kit::DizmoKit;
+
+    fn fixture_drumkit() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("dizmo_kit")
+            .join("tests")
+            .join("fixtures")
+            .join("kit")
+            .join("drumkit.xml")
+    }
 
     fn write_wav(path: &Path) {
         let spec = hound::WavSpec {
@@ -415,10 +433,8 @@ mod tests {
 
     #[test]
     fn save_normalizes_layout_copies_and_round_trips() {
-        let root = std::env::temp_dir().join(format!(
-            "dizmo_editor_save_test_{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_save_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::create_dir_all(&root);
         let external = root.parent().unwrap().join("outside.wav");
@@ -438,15 +454,17 @@ mod tests {
         kit.add_sample(snare, "Snare-1", "inside.wav");
 
         kit.add_note(35);
-        let note_row = kit.midimap.entries.iter().position(|e| e.note == 35).unwrap();
+        let note_row = kit
+            .midimap
+            .entries
+            .iter()
+            .position(|e| e.note == 35)
+            .unwrap();
         kit.midimap.entries[note_row].instrument = "Kick Drum".into();
 
         save(&mut kit).unwrap();
         assert!(!kit.dirty);
-        assert_eq!(
-            kit.drumkit.default_midimap.as_deref(),
-            Some("midimap.xml")
-        );
+        assert_eq!(kit.drumkit.default_midimap.as_deref(), Some("midimap.xml"));
 
         assert!(root.join("Kick Drum/Kick Drum.xml").exists());
         assert!(root.join("Kick Drum/samples/outside.wav").exists());
@@ -459,7 +477,10 @@ mod tests {
         assert_eq!(loaded.instruments.len(), 2);
 
         assert_eq!(loaded.instruments[0].name, "Kick Drum");
-        assert_eq!(loaded.drums.instrument_refs[0].file, "Kick Drum/Kick Drum.xml");
+        assert_eq!(
+            loaded.drums.instrument_refs[0].file,
+            "Kick Drum/Kick Drum.xml"
+        );
         assert_eq!(
             loaded.instruments[0].samples[0].audio_files[0].file,
             "samples/outside.wav"
@@ -473,10 +494,7 @@ mod tests {
         );
 
         let midimap = loaded.load_midimap("midimap.xml").unwrap();
-        assert_eq!(
-            midimap.instrument_for_note(35),
-            Some("Kick Drum")
-        );
+        assert_eq!(midimap.instrument_for_note(35), Some("Kick Drum"));
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&external);
@@ -484,10 +502,8 @@ mod tests {
 
     #[test]
     fn save_missing_source_does_not_abort() {
-        let root = std::env::temp_dir().join(format!(
-            "dizmo_editor_save_missing_{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_save_missing_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         let mut kit = EditorKit::new_kit("Ghost Kit", 44100.0, &["A".into()]);
@@ -509,10 +525,8 @@ mod tests {
 
     #[test]
     fn save_rejects_duplicate_instrument_names() {
-        let root = std::env::temp_dir().join(format!(
-            "dizmo_editor_save_dup_{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_save_dup_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         let mut kit = EditorKit::new_kit("Dup Kit", 44100.0, &["A".into()]);
@@ -521,6 +535,83 @@ mod tests {
         kit.add_instrument("Same");
 
         assert!(save(&mut kit).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fixture_kit_round_trips() {
+        let fixture = fixture_drumkit();
+        let (mut kit, warning) = load(&fixture).unwrap();
+        assert!(
+            warning.is_none(),
+            "fixture kit should load without warnings"
+        );
+
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_fixture_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        kit.root_dir = Some(root.clone());
+        save(&mut kit).unwrap();
+
+        let loaded = DizmoKit::load(root.join("drumkit.xml")).unwrap();
+
+        assert_eq!(loaded.drums.name, kit.drumkit.name);
+        assert_eq!(loaded.drums.description, kit.drumkit.description);
+        assert_eq!(loaded.drums.samplerate, kit.drumkit.samplerate);
+        assert_eq!(loaded.drums.version, kit.drumkit.version);
+        assert_eq!(loaded.default_midimap, kit.drumkit.default_midimap);
+
+        assert_eq!(loaded.drums.channels.len(), kit.drumkit.channels.len());
+        for (expected, actual) in kit.drumkit.channels.iter().zip(&loaded.drums.channels) {
+            assert_eq!(actual.name, expected.name);
+            assert_eq!(actual.num, expected.num);
+        }
+
+        assert_eq!(loaded.instruments.len(), kit.instruments.len());
+        for (expected, actual) in kit.instruments.iter().zip(&loaded.instruments) {
+            assert_eq!(actual.name, expected.reference.name);
+            assert_eq!(actual.group, expected.reference.group);
+            assert_eq!(actual.channel_map, expected.reference.channel_map);
+            assert_eq!(actual.chokes, expected.reference.chokes);
+
+            assert_eq!(actual.version, expected.instrument.version);
+            assert_eq!(actual.description, expected.instrument.description);
+            assert_eq!(actual.channels, expected.instrument.channels);
+
+            assert_eq!(actual.samples.len(), expected.instrument.samples.len());
+            for (expected_sample, actual_sample) in
+                expected.instrument.samples.iter().zip(&actual.samples)
+            {
+                assert_eq!(actual_sample.name, expected_sample.name);
+                assert_eq!(actual_sample.power, expected_sample.power);
+                assert_eq!(actual_sample.normalized, expected_sample.normalized);
+                assert_eq!(
+                    actual_sample.audio_files.len(),
+                    expected_sample.audio_files.len()
+                );
+                for (expected_af, actual_af) in expected_sample
+                    .audio_files
+                    .iter()
+                    .zip(&actual_sample.audio_files)
+                {
+                    assert_eq!(actual_af.channel, expected_af.channel);
+                    assert_eq!(actual_af.file_channel, expected_af.file_channel);
+                    assert!(
+                        actual_af.file.starts_with("samples/"),
+                        "audio file should be normalized to samples/: {}",
+                        actual_af.file
+                    );
+                }
+            }
+
+            assert_eq!(actual.velocities, expected.instrument.velocities);
+        }
+
+        let midimap = loaded.load_midimap("midimap.xml").unwrap();
+        assert_eq!(midimap.entries, kit.midimap.entries);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }
