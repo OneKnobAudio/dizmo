@@ -55,7 +55,6 @@ pub enum Message {
     RenameInstrument(usize, String),
     ToggleChannelAssignment(usize, String),
     SetChannelMain(usize, String, bool),
-    AddSample(usize),
     RemoveSample(usize, usize),
     RenameSample(usize, usize, String),
     SamplePower(usize, usize, f32),
@@ -68,6 +67,8 @@ pub enum Message {
     MidimapAssign(usize, Option<usize>),
     MidimapRemove(usize),
     DismissStatus,
+    ImportSample(usize),
+    SampleImported(usize, Option<PathBuf>),
 }
 
 pub struct App {
@@ -280,14 +281,6 @@ impl App {
                     kit.set_channel_main(i, &channel, is_main);
                 }
             }
-            Message::AddSample(i) => {
-                if let Some(kit) = &mut self.kit {
-                    let n = kit.instruments[i].instrument.samples.len();
-                    let index =
-                        kit.add_sample(i, &format!("Sample {}", n + 1), "samples/placeholder.wav");
-                    self.selection = Selection::Sample(i, index);
-                }
-            }
             Message::RemoveSample(i, s) => {
                 if let Some(kit) = &mut self.kit {
                     kit.remove_sample(i, s);
@@ -328,7 +321,20 @@ impl App {
                     self.status = Some("This sample has no audio files to preview.".into());
                     return Task::none();
                 };
+                if !self.player.audio_available() {
+                    self.status =
+                        Some("No audio output device available — preview is disabled.".into());
+                    return Task::none();
+                }
                 let path = inst.instrument.base_dir.join(&audio_file.file);
+                if !path.is_file() {
+                    self.status = Some(format!("Sample file not found: '{}'.", path.display()));
+                    return Task::none();
+                }
+                if hound::WavReader::open(&path).is_err() {
+                    self.status = Some(format!("'{}' is not a readable WAV file.", path.display()));
+                    return Task::none();
+                }
                 self.player
                     .play(&path, audio_file.file_channel, self.preview_volume);
                 self.previewing = Some((instrument, sample));
@@ -370,6 +376,44 @@ impl App {
                 }
             }
             Message::DismissStatus => self.status = None,
+            Message::ImportSample(instrument) => {
+                return Task::perform(
+                    AsyncFileDialog::new()
+                        .add_filter("Audio File", &["wav"])
+                        .pick_file(),
+                    move |picked| {
+                        Message::SampleImported(
+                            instrument,
+                            picked.map(|handle| handle.path().to_path_buf()),
+                        )
+                    },
+                );
+            }
+            Message::SampleImported(instrument, Some(file)) => {
+                let Some(kit) = &mut self.kit else {
+                    return Task::none();
+                };
+                match kit.import_sample(instrument, &file) {
+                    Ok(index) => {
+                        let name = kit
+                            .instruments
+                            .get(instrument)
+                            .map(|inst| inst.reference.name.clone())
+                            .unwrap_or_default();
+                        self.selection = Selection::Sample(instrument, index);
+                        self.status = Some(format!(
+                            "Imported '{}' into '{name}'.",
+                            file.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        ));
+                    }
+                    Err(error) => {
+                        self.status = Some(error);
+                    }
+                }
+            }
+            Message::SampleImported(_, None) => {}
         }
         Task::none()
     }

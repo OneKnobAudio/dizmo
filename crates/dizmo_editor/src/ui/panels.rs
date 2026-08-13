@@ -193,7 +193,7 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
         text("Samples").size(12).color(TEXT),
         samples,
         button(text("+ Add sample"))
-            .on_press(Message::AddSample(index))
+            .on_press(Message::ImportSample(index))
             .style(pill(false)),
         iced::widget::rule::horizontal(1.0),
         button(text("Remove instrument"))
@@ -231,12 +231,13 @@ pub fn sample_panel<'a>(
     }
     if sample.audio_files.is_empty() {
         audio_files = audio_files.push(
-            text("No audio files yet — import a WAV (Phase 4).")
-                .size(11)
-                .color(TEXT_DIM),
+            text(
+                "No audio files yet — assign channels to this instrument first (workflow step 4).",
+            )
+            .size(11)
+            .color(TEXT_DIM),
         );
     }
-
     column![
         text("Sample").size(18).color(TEXT),
         field("Name", &sample.name, move |name| Message::RenameSample(

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dizmo_kit::drumkit::InstrumentRef;
 use dizmo_kit::{
@@ -193,29 +193,49 @@ impl EditorKit {
         }
     }
 
-    /// Workflow step 3: add a sample with one audio file per instrument channel.
-    pub fn add_sample(&mut self, instrument: usize, name: &str, wav: &str) -> usize {
+    /// Workflow step 3: import a WAV file as a new sample.
+    ///
+    /// Each sample holds exactly **one** audio file; that file feeds **every**
+    /// channel of the instrument — one [`AudioFile`] row per instrument
+    /// channel, all referencing the same WAV, with `file_channel` picking the
+    /// channel at the same position inside the WAV (clamped to the WAV's
+    /// channel count). The WAV is referenced in place; the copy into
+    /// `<root>/<name>/samples/` happens during Save / Save As.
+    pub fn import_sample(&mut self, instrument: usize, path: &Path) -> Result<usize, String> {
         let Some(inst) = self.instruments.get_mut(instrument) else {
-            return 0;
+            return Err("Instrument not found.".to_string());
         };
+        if inst.instrument.channels.is_empty() {
+            return Err(format!(
+                "'{}' has no channels yet — assign kit channels to it before importing samples.",
+                inst.reference.name
+            ));
+        }
+        let reader = hound::WavReader::open(path)
+            .map_err(|err| format!("'{}' is not a readable WAV file: {err}", path.display()))?;
+        let wav_channels = usize::from(reader.spec().channels).max(1);
+
+        let file = path.to_string_lossy().into_owned();
         let audio_files: Vec<AudioFile> = inst
             .instrument
             .channels
             .iter()
-            .map(|ch| AudioFile {
-                channel: ch.name.clone(),
-                file: wav.to_string(),
-                file_channel: 0,
+            .enumerate()
+            .map(|(index, channel)| AudioFile {
+                channel: channel.name.clone(),
+                file: file.clone(),
+                file_channel: index.min(wav_channels - 1),
             })
             .collect();
+        let name = unique_sample_name(&inst.instrument.samples, path);
         inst.instrument.samples.push(Sample {
-            name: name.into(),
+            name,
             power: 0.5,
             normalized: true,
             audio_files,
         });
         self.dirty = true;
-        inst.instrument.samples.len() - 1
+        Ok(inst.instrument.samples.len() - 1)
     }
 
     pub fn remove_sample(&mut self, instrument: usize, sample: usize) {
@@ -324,6 +344,23 @@ impl EditorKit {
             self.dirty = true;
         }
     }
+}
+
+/// A sample name derived from the WAV file stem, deduplicated against the
+/// instrument's existing sample names with a ` (n)` suffix.
+fn unique_sample_name(samples: &[Sample], path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "sample".to_string());
+    let mut name = stem.clone();
+    let mut n = 2;
+    while samples.iter().any(|sample| sample.name == name) {
+        name = format!("{stem} ({n})");
+        n += 1;
+    }
+    name
 }
 
 fn slug(name: &str) -> String {

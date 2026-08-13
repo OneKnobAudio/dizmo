@@ -522,15 +522,21 @@ mod tests {
     }
 
     fn write_wav(path: &Path) {
+        write_wav_channels(path, 1);
+    }
+
+    fn write_wav_channels(path: &Path, channels: u16) {
         let spec = hound::WavSpec {
-            channels: 1,
+            channels,
             sample_rate: 48000,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
         let mut writer = hound::WavWriter::create(path, spec).unwrap();
         for _ in 0..100 {
-            writer.write_sample(0i16).unwrap();
+            for _ in 0..channels {
+                writer.write_sample(0i16).unwrap();
+            }
         }
         writer.finalize().unwrap();
     }
@@ -549,15 +555,13 @@ mod tests {
 
         let kick = kit.add_instrument("Kick Drum");
         kit.toggle_channel_assignment(kick, "Kick");
-        kit.instruments[kick].instrument.base_dir = external.parent().unwrap().to_path_buf();
-        kit.add_sample(kick, "Kick-1", "outside.wav");
+        kit.import_sample(kick, &external).unwrap();
 
         let snare = kit.add_instrument("Snare");
         kit.toggle_channel_assignment(snare, "Kick");
-        kit.instruments[snare].instrument.base_dir = root.clone();
         let inside = root.join("inside.wav");
         write_wav(&inside);
-        kit.add_sample(snare, "Snare-1", "inside.wav");
+        kit.import_sample(snare, &inside).unwrap();
 
         kit.add_note(35);
         let note_row = kit
@@ -616,7 +620,21 @@ mod tests {
         kit.root_dir = Some(root.clone());
         let index = kit.add_instrument("Ghost");
         kit.toggle_channel_assignment(index, "A");
-        kit.add_sample(index, "Ghost-1", "samples/ghost.wav");
+        // A sample whose source WAV is missing: save must keep the dangling
+        // `samples/…` path instead of aborting.
+        kit.instruments[index]
+            .instrument
+            .samples
+            .push(dizmo_kit::Sample {
+                name: "Ghost-1".into(),
+                power: 0.5,
+                normalized: true,
+                audio_files: vec![dizmo_kit::AudioFile {
+                    channel: "A".into(),
+                    file: "samples/ghost.wav".into(),
+                    file_channel: 0,
+                }],
+            });
 
         save(&mut kit).unwrap();
 
@@ -643,6 +661,95 @@ mod tests {
 
         assert!(save(&mut kit).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn import_sample_feeds_one_file_to_all_channels() {
+        let root = std::env::temp_dir().join(format!("dizmo_editor_import_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit(
+            "Import Test",
+            48000.0,
+            &["Kick".into(), "AmbL".into(), "AmbR".into()],
+        );
+        let inst = kit.add_instrument("Kick");
+        kit.toggle_channel_assignment(inst, "Kick");
+        kit.toggle_channel_assignment(inst, "AmbL");
+        kit.toggle_channel_assignment(inst, "AmbR");
+
+        let wav = root
+            .parent()
+            .unwrap()
+            .join(format!("hit_{}.wav", std::process::id()));
+        write_wav_channels(&wav, 2);
+
+        let index = kit.import_sample(inst, &wav).unwrap();
+        assert!(kit.dirty);
+        let sample = &kit.instruments[inst].instrument.samples[index];
+        let expected_name = wav.file_stem().unwrap().to_string_lossy();
+        assert_eq!(sample.name, expected_name);
+        // One row per instrument channel, all pointing at the same WAV, with
+        // filechannel clamped to the WAV's channel count (2 channels here).
+        assert_eq!(sample.audio_files.len(), 3);
+        for (i, audio) in sample.audio_files.iter().enumerate() {
+            assert_eq!(audio.channel, kit.drumkit.channels[i].name);
+            assert_eq!(audio.file_channel, i.min(1));
+            assert!(Path::new(&audio.file).is_absolute());
+        }
+        assert!(
+            sample
+                .audio_files
+                .iter()
+                .all(|a| a.file == sample.audio_files[0].file)
+        );
+
+        // Re-importing the same WAV deduplicates the sample name.
+        let index2 = kit.import_sample(inst, &wav).unwrap();
+        let deduped = format!("{expected_name} (2)");
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[index2].name,
+            deduped
+        );
+
+        // An instrument with no channels cannot import.
+        let empty = kit.add_instrument("Empty");
+        assert!(kit.import_sample(empty, &wav).is_err());
+
+        // Not a WAV is rejected.
+        let not_wav = root.join("readme.txt");
+        std::fs::write(&not_wav, "not audio").unwrap();
+        assert!(kit.import_sample(inst, &not_wav).is_err());
+
+        // Save copies the single source once; both samples reference it.
+        let wav_name = wav.file_name().unwrap().to_string_lossy().into_owned();
+        let copied = format!("samples/{wav_name}");
+        kit.root_dir = Some(root.clone());
+        save(&mut kit).unwrap();
+        let loaded = DizmoKit::load(root.join("Import Test.xml")).unwrap();
+        assert!(root.join("Kick").join(&copied).exists());
+        for sample in &loaded.instruments[0].samples {
+            assert_eq!(sample.audio_files.len(), 3);
+            for audio in &sample.audio_files {
+                assert_eq!(audio.file, copied);
+            }
+        }
+
+        // A WAV already inside the kit root is referenced in place, never copied.
+        let inside = root.join("inside.wav");
+        write_wav_channels(&inside, 1);
+        let index3 = kit.import_sample(inst, &inside).unwrap();
+        save(&mut kit).unwrap();
+        let loaded = DizmoKit::load(root.join("Import Test.xml")).unwrap();
+        assert!(!root.join("Kick/samples/inside.wav").exists());
+        assert_eq!(
+            loaded.instruments[0].samples[index3].audio_files[0].file,
+            "../inside.wav"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&wav);
     }
 
     #[test]
