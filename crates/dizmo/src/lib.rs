@@ -482,9 +482,13 @@ macro_rules! impl_dizmo_plugin {
                                     mappings: engine.mappings(),
                                     warnings,
                                 };
-                                let _ = engine_tx.send(Ok(engine));
+                                // Record the kit BEFORE sending the engine:
+                                // the channel send is what wakes the receiver,
+                                // so anything it expects to read afterwards
+                                // (like `kit_info`) must already be written.
                                 *kit_info.lock().expect("kit info mutex poisoned") =
                                     Some(info.clone());
+                                let _ = engine_tx.send(Ok(engine));
                                 let slot = status_tx.lock().expect("status tx mutex poisoned");
                                 if let Some(tx) = slot.as_ref() {
                                     let _ = tx.send(info.to_status());
