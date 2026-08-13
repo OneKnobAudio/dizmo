@@ -62,10 +62,13 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
 
     let mut seen = std::collections::HashSet::new();
     for inst in &kit.instruments {
-        let name = inst.reference.name.trim();
-        if !seen.insert(name.to_string()) {
+        // Duplicate check is case-insensitive and trimmed, so two instruments
+        // cannot collide on the filesystem (macOS/Windows).
+        let name = inst.reference.name.trim().to_lowercase();
+        if !seen.insert(name) {
             return Err(format!(
-                "Duplicate instrument name '{name}'; names must be unique to save."
+                "Duplicate instrument name '{}'; names must be unique to save.",
+                inst.reference.name.trim()
             ));
         }
     }
@@ -166,9 +169,8 @@ fn convert_v1_instrument_to_v2(inst: &mut Instrument) {
 
 fn plan_instrument(inst: &EditorInstrument, root: &Path) -> Result<InstrumentPlan, String> {
     let name = inst.reference.name.trim();
-    if name.is_empty() {
-        return Err("Instrument with no name cannot be saved.".to_string());
-    }
+    crate::model::types::validate_file_name(name)
+        .map_err(|error| format!("Instrument '{}': {error}.", inst.reference.name.trim()))?;
     let folder = root.join(name);
     let samples_dir = folder.join("samples");
     std::fs::create_dir_all(&samples_dir)
@@ -720,6 +722,58 @@ mod tests {
         kit.add_instrument("Same");
 
         assert!(save(&mut kit).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_rejects_duplicate_instrument_names_case_insensitively() {
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_save_dupci_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit("Dup CI Kit", 44100.0, &["A".into()]);
+        kit.root_dir = Some(root.clone());
+        kit.add_instrument("Kick");
+        kit.add_instrument(" kick ");
+
+        assert!(save(&mut kit).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_rejects_filesystem_unsafe_instrument_names() {
+        let root = std::env::temp_dir().join(format!("dizmo_editor_deny_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Unsafe characters and surrounding whitespace are rejected, not sanitized.
+        for bad in ["Kick:Snare!", "Kick/", "Lead?", "kick.", " kick", ""] {
+            assert!(
+                crate::model::types::validate_file_name(bad).is_err(),
+                "'{bad}' should be rejected"
+            );
+        }
+        for good in ["Kick", "Kick Snare", "Tom-1", "Ride_Cymbal"] {
+            assert!(
+                crate::model::types::validate_file_name(good).is_ok(),
+                "'{good}' should be accepted"
+            );
+        }
+
+        let mut kit = EditorKit::new_kit("Deny Test", 44100.0, &["A".into()]);
+        kit.root_dir = Some(root.clone());
+        kit.add_instrument("Kick:Snare!");
+        assert!(save(&mut kit).is_err(), "unsafe name must abort the save");
+
+        kit.rename_instrument(0, "Kick Snare");
+        save(&mut kit).unwrap();
+        assert!(root.join("Kick Snare").join("Kick Snare.xml").exists());
+        let loaded = DizmoKit::load(root.join("Deny Test.xml")).unwrap();
+        assert_eq!(loaded.instruments[0].name, "Kick Snare");
+        assert_eq!(
+            loaded.drums.instrument_refs[0].file,
+            "Kick Snare/Kick Snare.xml"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

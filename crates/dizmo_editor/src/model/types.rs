@@ -124,6 +124,9 @@ impl EditorKit {
         }
         inst.reference.name = name.into();
         inst.instrument.name = name.into();
+        if let Some(reference) = self.drumkit.instrument_refs.get_mut(index) {
+            reference.name = name.into();
+        }
         for entry in &mut self.midimap.entries {
             if entry.instrument == old {
                 entry.instrument = name.into();
@@ -475,6 +478,36 @@ fn unique_sample_name(samples: &[Sample], path: &Path) -> String {
         n += 1;
     }
     name
+}
+
+/// Whether `name` is safe to use as a file or folder name. Names with
+/// filesystem-unsafe characters, surrounding whitespace/dots, or that are
+/// empty are rejected — the editor denies them instead of sanitizing.
+pub fn validate_file_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("name must not be empty".to_string());
+    }
+    if name != name.trim_matches([' ', '.']) {
+        return Err("name must not start or end with spaces or dots".to_string());
+    }
+    if let Some(c) = name.chars().find(|c| {
+        matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control()
+    }) {
+        return Err(format!("name must not contain '{c}'"));
+    }
+    Ok(())
+}
+
+/// Removes the characters that [`validate_file_name`] rejects, so the UI can
+/// deny unsafe input as it is typed.
+pub fn deny_unsafe_characters(name: &str) -> String {
+    name.chars()
+        .filter(|c| {
+            !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') && !c.is_control()
+        })
+        .collect::<String>()
+        .trim_end_matches([' ', '.'])
+        .to_string()
 }
 
 fn slug(name: &str) -> String {

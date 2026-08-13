@@ -21,9 +21,17 @@ pub enum ModalMessage {
     RemoveChannel(usize),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum DiscardAction {
+    NewKit,
+    OpenKit,
+}
+
 pub enum Modal {
     NewKit(NewKitDraft),
     ConfirmOverwrite(PathBuf),
+    DiscardChanges(DiscardAction),
+    Error(String),
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +155,60 @@ pub fn confirm_overwrite_modal<'a>(dir: &'a Path) -> Element<'a, Message> {
     .style(panel_style);
 
     dialog_stack(panel, Message::SaveAsCancel)
+}
+
+/// Asks for confirmation before replacing the current (dirty) kit.
+pub fn discard_changes_modal<'a>(action: DiscardAction) -> Element<'a, Message> {
+    let what = match action {
+        DiscardAction::NewKit => "create a new kit",
+        DiscardAction::OpenKit => "open another kit",
+    };
+    let panel = container(
+        column![
+            text("Unsaved changes").size(16).color(TEXT),
+            text(format!(
+                "The current kit has unsaved changes. Discard them and {what}?"
+            ))
+            .size(11)
+            .color(TEXT_DIM),
+            row![
+                button(text("Cancel"))
+                    .on_press(Message::DiscardCancelled)
+                    .style(pill(false)),
+                button(text("Discard"))
+                    .on_press(Message::DiscardConfirmed)
+                    .style(danger_button_style),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .width(Length::Fixed(340.0)),
+    )
+    .width(Length::Fixed(380.0))
+    .padding(20)
+    .style(panel_style);
+
+    dialog_stack(panel, Message::DiscardCancelled)
+}
+
+/// Shows a load/save error with a single OK button.
+pub fn error_modal<'a>(message: &'a str) -> Element<'a, Message> {
+    let panel = container(
+        column![
+            text("Error").size(16).color(TEXT),
+            text(message).size(11).color(TEXT),
+            button(text("OK"))
+                .on_press(Message::DismissError)
+                .style(pill(true)),
+        ]
+        .spacing(10)
+        .width(Length::Fixed(340.0)),
+    )
+    .width(Length::Fixed(380.0))
+    .padding(20)
+    .style(panel_style);
+
+    dialog_stack(panel, Message::DismissError)
 }
 
 fn dialog_stack<'a>(

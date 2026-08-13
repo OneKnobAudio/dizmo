@@ -29,6 +29,9 @@ pub fn welcome() -> Element<'static, Message> {
                     .style(pill(false)),
             ]
             .spacing(12),
+            text("Shortcuts: ⌘N new  ·  ⌘O open  ·  ⌘S save  ·  ⌘⇧S save as")
+                .size(11)
+                .color(TEXT_DIM),
         ]
         .spacing(18)
         .align_x(iced::Alignment::Center),

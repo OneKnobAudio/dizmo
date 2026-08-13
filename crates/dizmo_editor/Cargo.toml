@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 dizmo_kit = { path = "../dizmo_kit" }
+futures = "0.3"
 hound = "3.5.1"
 iced = "0.14.0"
 rfd = "0.17.2"

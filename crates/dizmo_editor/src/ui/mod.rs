@@ -17,7 +17,14 @@ use crate::model::EditorKit;
 use crate::model::load::load;
 use crate::model::save::save;
 
-use modal::{Modal, ModalMessage, NewKitDraft};
+use modal::{DiscardAction, Modal, ModalMessage, NewKitDraft};
+
+#[derive(Debug, Clone, Copy)]
+pub enum Shortcut {
+    Save,
+    SaveAs,
+    Open,
+}
 
 const SIDEBAR_WIDTH: f32 = 230.0;
 const DEFAULT_SAMPLERATE: f64 = 48000.0;
@@ -88,6 +95,11 @@ pub enum Message {
     MidimapAssign(usize, Option<usize>),
     MidimapRemove(usize),
     DismissStatus,
+    PreviewFinished(u64),
+    Shortcut(Shortcut),
+    DiscardConfirmed,
+    DiscardCancelled,
+    DismissError,
     ImportSample(usize),
     SampleImported(usize, Option<PathBuf>),
 }
@@ -100,6 +112,7 @@ pub struct App {
     midimap_note: String,
     samplerate_text: String,
     player: PreviewPlayer,
+    preview_token: u64,
     previewing: Option<(usize, usize)>,
     preview_volume: f32,
 }
@@ -114,28 +127,57 @@ impl App {
             midimap_note: String::new(),
             samplerate_text: DEFAULT_SAMPLERATE.to_string(),
             player: PreviewPlayer::spawn(),
+            preview_token: 0,
             previewing: None,
             preview_volume: 1.0,
         }
     }
 
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        use iced::keyboard::{Event, Key};
+        let keyboard = iced::keyboard::listen().filter_map(|event| match event {
+            Event::KeyPressed { key, modifiers, .. } if modifiers.command() => match key {
+                Key::Character(c) if c.as_ref() == "s" && modifiers.shift() => {
+                    Some(Message::Shortcut(Shortcut::SaveAs))
+                }
+                Key::Character(c) if c.as_ref() == "s" => Some(Message::Shortcut(Shortcut::Save)),
+                Key::Character(c) if c.as_ref() == "o" => Some(Message::Shortcut(Shortcut::Open)),
+                _ => None,
+            },
+            _ => None,
+        });
+        // Runs once: relays "playback finished" tokens from the audio thread so
+        // the Play/Stop button un-toggles when a sample ends on its own.
+        let playback = iced::Subscription::run(playback_finished_stream);
+        iced::Subscription::batch([keyboard, playback])
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::NewKitClicked => {
-                self.modal = Some(Modal::NewKit(NewKitDraft::new()));
+                if let Some(kit) = &self.kit
+                    && kit.dirty
+                {
+                    self.modal = Some(Modal::DiscardChanges(DiscardAction::NewKit));
+                } else {
+                    self.modal = Some(Modal::NewKit(NewKitDraft::new()));
+                }
             }
             Message::OpenKitClicked => {
-                return Task::perform(
-                    AsyncFileDialog::new()
-                        .add_filter("Kits", &["xml"])
-                        .pick_file(),
-                    |picked| Message::KitOpened(picked.map(|handle| handle.path().to_path_buf())),
-                );
+                if let Some(kit) = &self.kit
+                    && kit.dirty
+                {
+                    self.modal = Some(Modal::DiscardChanges(DiscardAction::OpenKit));
+                } else {
+                    return self.open_kit();
+                }
             }
             Message::NewKitModal(edit) => {
                 if let Some(Modal::NewKit(draft)) = &mut self.modal {
                     match edit {
-                        ModalMessage::Name(name) => draft.name = name,
+                        ModalMessage::Name(name) => {
+                            draft.name = crate::model::types::deny_unsafe_characters(&name)
+                        }
                         ModalMessage::Samplerate(rate) => draft.samplerate = rate,
                         ModalMessage::RenameChannel(i, name) => {
                             if let Some(channel) = draft.channels.get_mut(i) {
@@ -193,10 +235,43 @@ impl App {
                     self.stop_preview();
                 }
                 Err(error) => {
-                    self.status = Some(format!("Could not load kit: {error}"));
+                    self.modal = Some(Modal::Error(format!("Could not load kit: {error}")));
                 }
             },
-            Message::Save => return self.start_save(),
+            Message::DiscardConfirmed => match self.modal.take() {
+                Some(Modal::DiscardChanges(DiscardAction::NewKit)) => {
+                    self.modal = Some(Modal::NewKit(NewKitDraft::new()));
+                }
+                Some(Modal::DiscardChanges(DiscardAction::OpenKit)) => {
+                    return self.open_kit();
+                }
+                _ => {}
+            },
+            Message::DiscardCancelled => self.modal = None,
+            Message::DismissError => self.modal = None,
+            Message::Shortcut(shortcut) => match shortcut {
+                Shortcut::Save => {
+                    if let Some(kit) = &self.kit
+                        && !kit.dirty
+                        && kit.root_dir.is_some()
+                    {
+                        self.status = Some("Nothing to save — the kit is unchanged.".into());
+                        return Task::none();
+                    }
+                    return self.start_save();
+                }
+                Shortcut::SaveAs => return self.pick_save_dir(),
+                Shortcut::Open => {
+                    if let Some(kit) = &self.kit
+                        && kit.dirty
+                    {
+                        self.modal = Some(Modal::DiscardChanges(DiscardAction::OpenKit));
+                    } else {
+                        return self.open_kit();
+                    }
+                }
+            },
+            Message::Save => return self.save_or_note(),
             Message::SaveAs => return self.pick_save_dir(),
             Message::SaveAsPicked(Some(dir)) => {
                 // Saving into a non-empty directory may overwrite files, so
@@ -233,7 +308,7 @@ impl App {
                     self.status = Some(format!("Saved kit '{}'.", name));
                 }
                 Err(error) => {
-                    self.status = Some(format!("Could not save kit: {error}"));
+                    self.modal = Some(Modal::Error(format!("Could not save kit: {error}")));
                 }
             },
             Message::Select(selection) => {
@@ -249,6 +324,7 @@ impl App {
                 self.selection = selection;
             }
             Message::KitName(name) => {
+                let name = crate::model::types::deny_unsafe_characters(&name);
                 if let Some(kit) = &mut self.kit
                     && kit.drumkit.name != name
                 {
@@ -307,6 +383,7 @@ impl App {
                 self.selection = Selection::Kit;
             }
             Message::RenameInstrument(i, name) => {
+                let name = crate::model::types::deny_unsafe_characters(&name);
                 if let Some(kit) = &mut self.kit {
                     kit.rename_instrument(i, &name);
                 }
@@ -530,10 +607,22 @@ impl App {
                     self.status = Some(format!("'{}' is not a readable WAV file.", path.display()));
                     return Task::none();
                 }
-                self.player
-                    .play(&path, audio_file.file_channel, self.preview_volume);
+                self.preview_token += 1;
+                self.player.play(
+                    &path,
+                    audio_file.file_channel,
+                    self.preview_volume,
+                    self.preview_token,
+                );
                 self.previewing = Some((instrument, sample));
                 self.status = Some(format!("Previewing '{}'.", sample_ref.name));
+            }
+            Message::PreviewFinished(token) => {
+                // Playback ended on its own: un-toggle the Play/Stop button,
+                // unless a newer play already took over.
+                if token == self.preview_token {
+                    self.previewing = None;
+                }
             }
             Message::StopPreview => {
                 self.stop_preview();
@@ -618,6 +707,29 @@ impl App {
         self.previewing = None;
     }
 
+    /// Opens the kit file picker (used by the Open button and ⌘O).
+    fn open_kit(&self) -> Task<Message> {
+        Task::perform(
+            AsyncFileDialog::new()
+                .add_filter("Kits", &["xml"])
+                .pick_file(),
+            |picked| Message::KitOpened(picked.map(|handle| handle.path().to_path_buf())),
+        )
+    }
+
+    /// Saves, unless the kit is clean and already has a location (idempotent
+    /// save: nothing to write).
+    fn save_or_note(&mut self) -> Task<Message> {
+        if let Some(kit) = &self.kit
+            && !kit.dirty
+            && kit.root_dir.is_some()
+        {
+            self.status = Some("Nothing to save — the kit is unchanged.".into());
+            return Task::none();
+        }
+        self.start_save()
+    }
+
     /// Edits one optional kit metadata string field; an empty value clears it.
     fn edit_metadata_string(
         &mut self,
@@ -661,6 +773,8 @@ impl App {
         match &self.modal {
             Some(Modal::NewKit(draft)) => modal::new_kit_modal(draft),
             Some(Modal::ConfirmOverwrite(dir)) => modal::confirm_overwrite_modal(dir),
+            Some(Modal::DiscardChanges(action)) => modal::discard_changes_modal(*action),
+            Some(Modal::Error(message)) => modal::error_modal(message),
             None => match &self.kit {
                 Some(kit) => self.editor_view(kit),
                 None => panels::welcome(),
@@ -753,4 +867,15 @@ fn toolbar_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> 
         .on_press(message)
         .style(theme::pill(false))
         .into()
+}
+
+/// Relays "playback finished" tokens from the audio thread into iced messages.
+fn playback_finished_stream() -> impl futures::Stream<Item = Message> {
+    use futures::StreamExt;
+    let (sender, receiver) = futures::channel::mpsc::unbounded();
+    crate::audio::register_finished_listener(sender);
+    futures::stream::unfold(receiver, |mut receiver| async move {
+        let token = receiver.next().await?;
+        Some((Message::PreviewFinished(token), receiver))
+    })
 }

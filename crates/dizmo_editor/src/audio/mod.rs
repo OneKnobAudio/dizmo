@@ -5,22 +5,55 @@
 //! The output device is opened eagerly in [`PreviewPlayer::spawn`]; when that
 //! fails, [`PreviewPlayer::audio_available`] reports it so the UI can say why
 //! preview is silent instead of failing invisibly.
+//!
+//! When a playback ends on its own (it was not replaced by a newer play), the
+//! audio thread reports its token through [`register_finished_listener`]; the
+//! editor subscribes to those events so the Play/Stop button can un-toggle.
 
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
+use std::time::Duration;
 
+use futures::channel::mpsc::UnboundedSender;
 use rodio::buffer::SamplesBuffer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
+
+/// How often the playback thread checks whether the current playback ended.
+const COMPLETION_POLL: Duration = Duration::from_millis(50);
+
+/// UI-side listeners for "playback finished" events (token-based).
+static FINISHED_LISTENERS: OnceLock<Mutex<Vec<UnboundedSender<u64>>>> = OnceLock::new();
+
+fn finished_listeners() -> &'static Mutex<Vec<UnboundedSender<u64>>> {
+    FINISHED_LISTENERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Subscribes `tx` to playback-finished events. The editor calls this once
+/// from its subscription; each event carries the token of the finished play.
+pub fn register_finished_listener(tx: UnboundedSender<u64>) {
+    finished_listeners().lock().unwrap().push(tx);
+}
+
+fn send_finished(token: u64) {
+    let listeners = finished_listeners().lock().unwrap();
+    for listener in listeners.iter() {
+        let _ = listener.unbounded_send(token);
+    }
+}
 
 enum Command {
     Play {
         path: PathBuf,
         channel: usize,
         volume: f32,
+        /// Identifies this play; reported back when it finishes naturally.
+        token: u64,
     },
     SetVolume(f32),
     Stop,
@@ -65,11 +98,12 @@ impl PreviewPlayer {
     }
 
     /// Auditions `path`, playing `channel` (0-based) at `volume` (linear gain).
-    pub fn play(&self, path: &Path, channel: usize, volume: f32) {
+    pub fn play(&self, path: &Path, channel: usize, volume: f32, token: u64) {
         let _ = self.sender.send(Command::Play {
             path: path.to_path_buf(),
             channel,
             volume,
+            token,
         });
     }
 
@@ -94,13 +128,16 @@ impl PreviewPlayer {
             return;
         };
         let mut player: Option<Player> = None;
-        while let Ok(command) = receiver.recv() {
-            match command {
-                Command::Play {
+        // Token of the current playback; `None` once it has been reported.
+        let mut current: Option<(u64, bool)> = None;
+        loop {
+            match receiver.recv_timeout(COMPLETION_POLL) {
+                Ok(Command::Play {
                     path,
                     channel,
                     volume,
-                } => {
+                    token,
+                }) => {
                     if let Some(player) = &player {
                         player.stop();
                     }
@@ -110,22 +147,37 @@ impl PreviewPlayer {
                             next.set_volume(volume);
                             next.append(buffer);
                             player = Some(next);
+                            current = Some((token, false));
                         }
                         Err(err) => {
                             eprintln!("dizmo_editor: could not decode '{}': {err}", path.display());
+                            current = None;
                         }
                     }
                 }
-                Command::Stop => {
+                Ok(Command::Stop) => {
                     if let Some(player) = &player {
                         player.stop();
                     }
                 }
-                Command::SetVolume(volume) => {
+                Ok(Command::SetVolume(volume)) => {
                     if let Some(player) = &player {
                         player.set_volume(volume);
                     }
                 }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // The playback finished on its own (queue drained): report
+                    // it exactly once. A newer play replaces `current`, so a
+                    // stopped-but-replaced play never reports.
+                    if let Some((token, reported)) = current
+                        && !reported
+                        && player.as_ref().is_some_and(|player| player.len() == 0)
+                    {
+                        current = Some((token, true));
+                        send_finished(token);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         drop(audio_available);

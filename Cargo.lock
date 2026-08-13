@@ -1098,6 +1098,7 @@ name = "dizmo_editor"
 version = "0.1.0"
 dependencies = [
  "dizmo_kit",
+ "futures",
  "hound",
  "iced",
  "rfd",
