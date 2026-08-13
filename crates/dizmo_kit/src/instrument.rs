@@ -56,7 +56,6 @@ impl Instrument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstrumentChannel {
     pub name: String,
-    pub is_main: bool,
 }
 
 /// One hit sample: a single multi-channel WAV, one channel per output.
@@ -119,11 +118,7 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
                 .filter(|child| child.has_tag_name("channel"))
                 .map(|channel| {
                     let name = required_attr(&channel, "name", path)?;
-                    let is_main = match attr(&channel, "main") {
-                        Some(value) => parse_bool(&value, "attribute 'main' on <channel>", path)?,
-                        None => false,
-                    };
-                    Ok(InstrumentChannel { name, is_main })
+                    Ok(InstrumentChannel { name })
                 })
                 .collect::<Result<Vec<_>, KitError>>()
         })

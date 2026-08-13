@@ -415,15 +415,7 @@ fn serialize_instrument(inst: &Instrument, audio_paths: &[String]) -> String {
     ));
     out.push_str("  <channels>\n");
     for channel in &inst.channels {
-        let main = if channel.is_main {
-            " main=\"true\""
-        } else {
-            ""
-        };
-        out.push_str(&format!(
-            "    <channel name=\"{}\"{main}/>\n",
-            esc(&channel.name)
-        ));
+        out.push_str(&format!("    <channel name=\"{}\"/>\n", esc(&channel.name)));
     }
     out.push_str("  </channels>\n");
 
@@ -556,10 +548,12 @@ mod tests {
         kit.root_dir = Some(root.clone());
 
         let kick = kit.add_instrument("Kick Drum");
+        kit.toggle_channel_assignment(kick, "Kick");
         kit.instruments[kick].instrument.base_dir = external.parent().unwrap().to_path_buf();
         kit.add_sample(kick, "Kick-1", "outside.wav");
 
         let snare = kit.add_instrument("Snare");
+        kit.toggle_channel_assignment(snare, "Kick");
         kit.instruments[snare].instrument.base_dir = root.clone();
         let inside = root.join("inside.wav");
         write_wav(&inside);
@@ -621,6 +615,7 @@ mod tests {
         let mut kit = EditorKit::new_kit("Ghost Kit", 44100.0, &["A".into()]);
         kit.root_dir = Some(root.clone());
         let index = kit.add_instrument("Ghost");
+        kit.toggle_channel_assignment(index, "A");
         kit.add_sample(index, "Ghost-1", "samples/ghost.wav");
 
         save(&mut kit).unwrap();
@@ -651,6 +646,61 @@ mod tests {
     }
 
     #[test]
+    fn channel_assignment_and_main_flag_round_trip() {
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_channels_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit("Channel Test", 44100.0, &["Kick".into(), "Snare".into()]);
+        kit.root_dir = Some(root.clone());
+        let inst = kit.add_instrument("Kick");
+
+        // New instruments have no assigned channels.
+        assert!(kit.instruments[inst].instrument.channels.is_empty());
+        assert!(kit.instruments[inst].reference.channel_map.is_empty());
+
+        // Assign Kick and mark it main.
+        kit.toggle_channel_assignment(inst, "Kick");
+        kit.set_channel_main(inst, "Kick", true);
+        assert_eq!(kit.instruments[inst].instrument.channels.len(), 1);
+        assert_eq!(kit.instruments[inst].reference.channel_map.len(), 1);
+        assert!(kit.instruments[inst].reference.channel_map[0].is_main);
+
+        // Assigning the same channel again removes it.
+        kit.toggle_channel_assignment(inst, "Kick");
+        assert!(kit.instruments[inst].instrument.channels.is_empty());
+        assert!(kit.instruments[inst].reference.channel_map.is_empty());
+
+        // Assign two channels and save.
+        kit.toggle_channel_assignment(inst, "Kick");
+        kit.toggle_channel_assignment(inst, "Snare");
+        kit.set_channel_main(inst, "Kick", true);
+
+        save(&mut kit).unwrap();
+        let loaded = DizmoKit::load(root.join("Channel Test.xml")).unwrap();
+        let kick = &loaded.instruments[0];
+        assert_eq!(kick.channels.len(), 2);
+        assert_eq!(kick.channel_map.len(), 2);
+        assert!(
+            kick.channel_map
+                .iter()
+                .any(|m| m.in_name == "Kick" && m.is_main)
+        );
+        assert!(
+            kick.channel_map
+                .iter()
+                .any(|m| m.in_name == "Snare" && !m.is_main)
+        );
+        // Main only appears on channelmap, not on instrument channels.
+        let inst_xml = std::fs::read_to_string(root.join("Kick/Kick.xml")).unwrap();
+        assert!(inst_xml.contains("<channel name=\"Kick\"/>"));
+        assert!(!inst_xml.contains("<channel name=\"Kick\" main"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn converts_v1_velocity_groups_to_v2_power() {
         use dizmo_kit::{
             AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
@@ -667,7 +717,6 @@ mod tests {
             chokes: Vec::new(),
             channels: vec![InstrumentChannel {
                 name: "Hihat".into(),
-                is_main: true,
             }],
             samples: vec![
                 Sample {

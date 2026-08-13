@@ -53,10 +53,8 @@ pub enum Message {
     AddInstrument,
     RemoveInstrument(usize),
     RenameInstrument(usize, String),
-    AssignChannel(usize, usize, Option<usize>),
-    AssignChannelMain(usize, usize, bool),
-    AddInstrumentChannel(usize),
-    RemoveInstrumentChannel(usize, usize),
+    ToggleChannelAssignment(usize, String),
+    SetChannelMain(usize, String, bool),
     AddSample(usize),
     RemoveSample(usize, usize),
     RenameSample(usize, usize, String),
@@ -272,27 +270,14 @@ impl App {
                     kit.rename_instrument(i, &name);
                 }
             }
-            Message::AssignChannel(i, channel, out) => {
+            Message::ToggleChannelAssignment(i, channel) => {
                 if let Some(kit) = &mut self.kit {
-                    kit.set_channel_out(i, channel, out);
+                    kit.toggle_channel_assignment(i, &channel);
                 }
             }
-            Message::AssignChannelMain(i, channel, is_main) => {
+            Message::SetChannelMain(i, channel, is_main) => {
                 if let Some(kit) = &mut self.kit {
-                    kit.set_channel_main(i, channel, is_main);
-                }
-            }
-            Message::AddInstrumentChannel(i) => {
-                if let Some(kit) = &mut self.kit
-                    && let Some(inst) = kit.instruments.get(i)
-                {
-                    let n = inst.instrument.channels.len();
-                    kit.add_instrument_channel(i, &format!("Channel {}", n + 1));
-                }
-            }
-            Message::RemoveInstrumentChannel(i, channel) => {
-                if let Some(kit) = &mut self.kit {
-                    kit.remove_instrument_channel(i, channel);
+                    kit.set_channel_main(i, &channel, is_main);
                 }
             }
             Message::AddSample(i) => {

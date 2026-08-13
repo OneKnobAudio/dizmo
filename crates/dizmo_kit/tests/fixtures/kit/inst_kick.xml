@@ -4,9 +4,9 @@
     <title>Kick drum</title>
   </metadata>
   <channels>
-    <channel name="Kick" main="true"/>
-    <channel name="AmbL" main="true"/>
-    <channel name="AmbR" main="true"/>
+    <channel name="Kick"/>
+    <channel name="AmbL"/>
+    <channel name="AmbR"/>
   </channels>
   <samples>
     <sample name="Kick-1" power="0.00833794">

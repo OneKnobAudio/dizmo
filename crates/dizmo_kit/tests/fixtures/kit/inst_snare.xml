@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <instrument version="2.0" name="Snare">
   <channels>
-    <channel name="Snare" main="true"/>
+    <channel name="Snare"/>
   </channels>
   <samples>
     <sample name="Snare-1" power="0.02" normalized="true">

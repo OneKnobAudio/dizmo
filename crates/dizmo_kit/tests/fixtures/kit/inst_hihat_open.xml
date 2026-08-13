@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <instrument version="2.0" name="HihatOpen">
   <channels>
-    <channel name="Hihat" main="true"/>
+    <channel name="Hihat"/>
   </channels>
   <samples>
     <sample name="HO-1" power="0.04">

@@ -2,7 +2,7 @@
 <instrument version="1.0" name="HihatClosed">
   <description>Closed hihat</description>
   <channels>
-    <channel name="Hihat" main="true"/>
+    <channel name="Hihat"/>
   </channels>
   <samples>
     <sample name="HC-1">
