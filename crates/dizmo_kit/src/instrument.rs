@@ -88,6 +88,9 @@ pub struct Sample {
     pub power: f32,
     /// Whether the sample is normalized (version 2.0 only).
     pub normalized: bool,
+    /// Editor-only: target sample rate to resample the audio file to on save
+    /// (not part of the file format; the plugin never sets it).
+    pub resample: Option<u32>,
     pub audio_files: Vec<AudioFile>,
 }
 
@@ -215,6 +218,7 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
                         name: sample_name,
                         power,
                         normalized,
+                        resample: None,
                         audio_files,
                     })
                 })

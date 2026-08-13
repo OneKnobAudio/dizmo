@@ -222,6 +222,77 @@ fn decode_channel(path: &Path, channel: usize) -> Result<SamplesBuffer, String> 
     Ok(SamplesBuffer::new(channels, sample_rate, data))
 }
 
+/// Resamples the WAV at `path` in place to `target_rate`, using the ARDFTSRC
+/// algorithm (ardftsrc). A no-op when the file already is at the target rate.
+/// The file is rewritten as 16-bit PCM, preserving the channel count.
+pub fn resample_wav(path: &Path, target_rate: u32) -> Result<(), String> {
+    let mut reader = hound::WavReader::open(path)
+        .map_err(|err| format!("'{}' is not a readable WAV file: {err}", path.display()))?;
+    let spec = reader.spec();
+    if spec.sample_rate == target_rate {
+        return Ok(());
+    }
+    let channels = usize::from(spec.channels).max(1);
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?,
+        hound::SampleFormat::Int => {
+            let scale =
+                (1i64 << (u64::from(spec.bits_per_sample).saturating_sub(1)).min(31)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|sample| sample.map(|value| value as f32 / scale))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| err.to_string())?
+        }
+    };
+    if samples.is_empty() {
+        return Err("no samples in file".to_string());
+    }
+
+    // ardftsrc recommends f64 processing; PRESET_GOOD balances quality and
+    // speed for offline conversion.
+    let input: Vec<f64> = samples.iter().map(|sample| f64::from(*sample)).collect();
+    let config = ardftsrc::PRESET_GOOD
+        .with_input_rate(spec.sample_rate as usize)
+        .with_output_rate(target_rate as usize)
+        .with_channels(channels);
+    let mut resampler =
+        ardftsrc::InterleavedResampler::<f64>::new(config).map_err(|err| err.to_string())?;
+    let output = resampler
+        .process_all(&input)
+        .map_err(|err| err.to_string())?;
+    let resampled: Vec<f32> = output
+        .interleave()
+        .into_iter()
+        .map(|sample| sample as f32)
+        .collect();
+
+    // Write to a temp file, then atomically replace the original.
+    let tmp = path.with_extension("tmp");
+    let mut writer = hound::WavWriter::create(
+        &tmp,
+        hound::WavSpec {
+            channels: spec.channels,
+            sample_rate: target_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .map_err(|err| format!("Could not create '{}': {err}", tmp.display()))?;
+    for sample in resampled {
+        writer
+            .write_sample((sample.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .map_err(|err| err.to_string())?;
+    }
+    writer.finalize().map_err(|err| err.to_string())?;
+    std::fs::rename(&tmp, path)
+        .map_err(|err| format!("Could not replace '{}': {err}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +310,53 @@ mod tests {
             writer.write_sample(*sample).unwrap();
         }
         writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn resamples_wav_to_target_rate_in_place() {
+        let dir = std::env::temp_dir().join(format!("dizmo_resample_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 8000 Hz, 100 frames of a ramp.
+        let path = dir.join("down.wav");
+        let input: Vec<i16> = (0..100).map(|i| (i as i16) * 100).collect();
+        write_wav(&path, 1, &input);
+
+        resample_wav(&path, 4000).unwrap();
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().sample_rate, 4000);
+        let count = reader.samples::<i16>().count();
+        // Roughly half the frames (ARDFTSRC adds a small tail).
+        assert!(
+            (40..=60).contains(&count),
+            "expected ~50 frames, got {count}"
+        );
+
+        // Same rate is a no-op.
+        resample_wav(&path, 4000).unwrap();
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().sample_rate, 4000);
+        assert_eq!(reader.samples::<i16>().count(), count);
+
+        // Stereo resampling preserves the channel count.
+        let stereo = dir.join("stereo.wav");
+        write_wav(&stereo, 2, &[1, -1, 2, -2, 3, -3, 4, -4]);
+        resample_wav(&stereo, 16000).unwrap();
+        let mut reader = hound::WavReader::open(&stereo).unwrap();
+        assert_eq!(reader.spec().channels, 2);
+        assert_eq!(reader.spec().sample_rate, 16000);
+        let stereo_count = reader.samples::<i16>().count();
+        assert!(
+            stereo_count > 8,
+            "expected more than 8 samples, got {stereo_count}"
+        );
+
+        // A non-WAV file errors.
+        let not_wav = dir.join("readme.txt");
+        std::fs::write(&not_wav, "not audio").unwrap();
+        assert!(resample_wav(&not_wav, 4000).is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

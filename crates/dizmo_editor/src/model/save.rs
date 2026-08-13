@@ -35,7 +35,8 @@ struct InstrumentPlan {
     file: PathBuf,
     rel_file: String,
     xml: String,
-    copies: Vec<(PathBuf, PathBuf)>,
+    /// (source, dest, optional target rate to resample the copy to).
+    copies: Vec<(PathBuf, PathBuf, Option<u32>)>,
     audio_paths: Vec<String>,
 }
 
@@ -80,7 +81,7 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
 
     for plan in &plans {
-        for (source, dest) in &plan.copies {
+        for (source, dest, resample_to) in &plan.copies {
             std::fs::copy(source, dest).map_err(|err| {
                 format!(
                     "Could not copy sample '{}' to '{}': {err}",
@@ -88,6 +89,11 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
                     dest.display()
                 )
             })?;
+            // Resample the copied file (never the user's original) after it is
+            // in place, so the kit matches the declared sample rate.
+            if let Some(target_rate) = resample_to {
+                crate::audio::resample_wav(dest, *target_rate)?;
+            }
         }
     }
     for plan in &plans {
@@ -116,6 +122,8 @@ pub fn save(kit: &mut EditorKit) -> Result<(), String> {
                 }
                 index += 1;
             }
+            // The resample was applied to the copied files above.
+            sample.resample = None;
         }
     }
     kit.default_midimap = midimap_name;
@@ -176,7 +184,7 @@ fn plan_instrument(inst: &EditorInstrument, root: &Path) -> Result<InstrumentPla
     std::fs::create_dir_all(&samples_dir)
         .map_err(|err| format!("Could not create '{}': {err}", samples_dir.display()))?;
 
-    let mut copies: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut copies: Vec<(PathBuf, PathBuf, Option<u32>)> = Vec::new();
     let mut source_dest: HashMap<PathBuf, String> = HashMap::new();
     let mut dest_names: HashMap<String, ()> = HashMap::new();
     let mut audio_paths: Vec<String> = Vec::new();
@@ -201,7 +209,7 @@ fn plan_instrument(inst: &EditorInstrument, root: &Path) -> Result<InstrumentPla
                     .unwrap_or_else(|| "sample.wav".to_string());
                 let unique = unique_name(&base, &mut dest_names);
                 if source.exists() {
-                    copies.push((source, samples_dir.join(&unique)));
+                    copies.push((source, samples_dir.join(&unique), sample.resample));
                 }
                 let rel = format!("samples/{unique}");
                 source_dest.insert(key, rel.clone());
@@ -617,13 +625,13 @@ mod tests {
 
         let kick = kit.add_instrument("Kick Drum");
         kit.toggle_channel_assignment(kick, "Kick");
-        kit.import_sample(kick, &external).unwrap();
+        kit.import_sample(kick, &external, false).unwrap();
 
         let snare = kit.add_instrument("Snare");
         kit.toggle_channel_assignment(snare, "Kick");
         let inside = root.join("inside.wav");
         write_wav(&inside);
-        kit.import_sample(snare, &inside).unwrap();
+        kit.import_sample(snare, &inside, false).unwrap();
 
         kit.add_note(35);
         let note_row = kit
@@ -691,6 +699,7 @@ mod tests {
                 name: "Ghost-1".into(),
                 power: 0.5,
                 normalized: true,
+                resample: None,
                 audio_files: vec![dizmo_kit::AudioFile {
                     channel: "A".into(),
                     file: "samples/ghost.wav".into(),
@@ -799,7 +808,7 @@ mod tests {
             .join(format!("hit_{}.wav", std::process::id()));
         write_wav_channels(&wav, 2);
 
-        let index = kit.import_sample(inst, &wav).unwrap();
+        let index = kit.import_sample(inst, &wav, false).unwrap();
         assert!(kit.dirty);
         let sample = &kit.instruments[inst].instrument.samples[index];
         let expected_name = wav.file_stem().unwrap().to_string_lossy();
@@ -820,7 +829,7 @@ mod tests {
         );
 
         // Re-importing the same WAV deduplicates the sample name.
-        let index2 = kit.import_sample(inst, &wav).unwrap();
+        let index2 = kit.import_sample(inst, &wav, false).unwrap();
         let deduped = format!("{expected_name} (2)");
         assert_eq!(
             kit.instruments[inst].instrument.samples[index2].name,
@@ -829,12 +838,12 @@ mod tests {
 
         // An instrument with no channels cannot import.
         let empty = kit.add_instrument("Empty");
-        assert!(kit.import_sample(empty, &wav).is_err());
+        assert!(kit.import_sample(empty, &wav, false).is_err());
 
         // Not a WAV is rejected.
         let not_wav = root.join("readme.txt");
         std::fs::write(&not_wav, "not audio").unwrap();
-        assert!(kit.import_sample(inst, &not_wav).is_err());
+        assert!(kit.import_sample(inst, &not_wav, false).is_err());
 
         // Save copies the single source once; both samples reference it.
         let wav_name = wav.file_name().unwrap().to_string_lossy().into_owned();
@@ -853,7 +862,7 @@ mod tests {
         // A WAV already inside the kit root is referenced in place, never copied.
         let inside = root.join("inside.wav");
         write_wav_channels(&inside, 1);
-        let index3 = kit.import_sample(inst, &inside).unwrap();
+        let index3 = kit.import_sample(inst, &inside, false).unwrap();
         save(&mut kit).unwrap();
         let loaded = DizmoKit::load(root.join("Import Test.xml")).unwrap();
         assert!(!root.join("Kick/samples/inside.wav").exists());
@@ -861,6 +870,69 @@ mod tests {
             loaded.instruments[0].samples[index3].audio_files[0].file,
             "../inside.wav"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn save_resamples_imported_samples_to_the_kit_rate() {
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_resample_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit("Resample Kit", 48000.0, &["Kick".into()]);
+        kit.root_dir = Some(root.clone());
+        let inst = kit.add_instrument("Kick");
+        kit.toggle_channel_assignment(inst, "Kick");
+
+        // A 22050 Hz source, outside the kit root so it gets copied.
+        let wav = root
+            .parent()
+            .unwrap()
+            .join(format!("resample_src_{}.wav", std::process::id()));
+        let mut writer = hound::WavWriter::create(
+            &wav,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 22050,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for i in 0..2205 {
+            writer.write_sample((i % 1000) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        // Accept the resample: the copy must come out at the kit rate.
+        let index = kit.import_sample(inst, &wav, true).unwrap();
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[index].resample,
+            Some(48000)
+        );
+        save(&mut kit).unwrap();
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[index].resample,
+            None
+        );
+        let wav_name = wav.file_name().unwrap().to_string_lossy().into_owned();
+        let copied = root.join("Kick/samples").join(&wav_name);
+        let reader = hound::WavReader::open(&copied).unwrap();
+        assert_eq!(reader.spec().sample_rate, 48000);
+
+        // No-resample imports (rate already matches the kit) keep the file at
+        // its native rate: the copy is never touched.
+        let index2 = kit.import_sample(inst, &wav, false).unwrap();
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[index2].resample,
+            None
+        );
+        save(&mut kit).unwrap();
+        let reader = hound::WavReader::open(&copied).unwrap();
+        assert_eq!(reader.spec().sample_rate, 22050);
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&wav);
@@ -947,6 +1019,7 @@ mod tests {
                     name: "HC-1".into(),
                     power: 0.0,
                     normalized: false,
+                    resample: None,
                     audio_files: vec![AudioFile {
                         channel: "Hihat".into(),
                         file: "samples/hc1.wav".into(),
@@ -957,6 +1030,7 @@ mod tests {
                     name: "HC-2".into(),
                     power: 0.0,
                     normalized: false,
+                    resample: None,
                     audio_files: vec![AudioFile {
                         channel: "Hihat".into(),
                         file: "samples/hc2.wav".into(),

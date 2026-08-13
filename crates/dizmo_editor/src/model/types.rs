@@ -317,7 +317,16 @@ impl EditorKit {
     /// channel at the same position inside the WAV (clamped to the WAV's
     /// channel count). The WAV is referenced in place; the copy into
     /// `<root>/<name>/samples/` happens during Save / Save As.
-    pub fn import_sample(&mut self, instrument: usize, path: &Path) -> Result<usize, String> {
+    ///
+    /// `resample` marks the sample so its audio file is converted to the
+    /// kit's sample rate on save (the file itself is left untouched until
+    /// then).
+    pub fn import_sample(
+        &mut self,
+        instrument: usize,
+        path: &Path,
+        resample: bool,
+    ) -> Result<usize, String> {
         let Some(inst) = self.instruments.get_mut(instrument) else {
             return Err("Instrument not found.".to_string());
         };
@@ -330,6 +339,8 @@ impl EditorKit {
         let reader = hound::WavReader::open(path)
             .map_err(|err| format!("'{}' is not a readable WAV file: {err}", path.display()))?;
         let wav_channels = usize::from(reader.spec().channels).max(1);
+        let kit_rate = self.drumkit.samplerate.round() as u32;
+        let resample_target = (resample && kit_rate > 0).then_some(kit_rate);
 
         let file = path.to_string_lossy().into_owned();
         let audio_files: Vec<AudioFile> = inst
@@ -348,6 +359,7 @@ impl EditorKit {
             name,
             power: 0.5,
             normalized: true,
+            resample: resample_target,
             audio_files,
         });
         self.dirty = true;

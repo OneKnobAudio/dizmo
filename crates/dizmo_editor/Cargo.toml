@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ardftsrc = { version = "0.0.16", features = ["rayon"] }
 dizmo_kit = { path = "../dizmo_kit" }
 futures = "0.3"
 hound = "3.5.1"

@@ -100,6 +100,8 @@ pub enum Message {
     DiscardConfirmed,
     DiscardCancelled,
     DismissError,
+    ResampleConfirmed,
+    ResampleDeclined,
     ImportSample(usize),
     SampleImported(usize, Option<PathBuf>),
 }
@@ -674,32 +676,91 @@ impl App {
                 );
             }
             Message::SampleImported(instrument, Some(file)) => {
-                let Some(kit) = &mut self.kit else {
+                let Some(kit) = &self.kit else {
                     return Task::none();
                 };
-                match kit.import_sample(instrument, &file) {
-                    Ok(index) => {
-                        let name = kit
-                            .instruments
-                            .get(instrument)
-                            .map(|inst| inst.reference.name.clone())
-                            .unwrap_or_default();
-                        self.selection = Selection::Sample(instrument, index);
-                        self.status = Some(format!(
-                            "Imported '{}' into '{name}'.",
-                            file.file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default()
-                        ));
-                    }
+                // Warn when the sample's rate does not match the kit's; the
+                // user may accept a resample on save or import as-is.
+                let source_rate = match hound::WavReader::open(&file) {
+                    Ok(reader) => reader.spec().sample_rate,
                     Err(error) => {
-                        self.status = Some(error);
+                        self.status =
+                            Some(format!("'{file:?}' is not a readable WAV file: {error}"));
+                        return Task::none();
                     }
+                };
+                let kit_rate = kit.drumkit.samplerate.round() as u32;
+                if source_rate != kit_rate && kit_rate > 0 {
+                    self.modal = Some(Modal::ResampleConfirm {
+                        instrument,
+                        file,
+                        source_rate,
+                        kit_rate,
+                    });
+                } else {
+                    self.import_sample_file(instrument, &file, false);
                 }
             }
             Message::SampleImported(_, None) => {}
+            Message::ResampleConfirmed => {
+                let pending = match &self.modal {
+                    Some(Modal::ResampleConfirm {
+                        instrument, file, ..
+                    }) => (*instrument, file.clone()),
+                    _ => return Task::none(),
+                };
+                self.modal = None;
+                self.import_sample_file(pending.0, &pending.1, true);
+            }
+            Message::ResampleDeclined => {
+                // Abort the import: a sample kept at a different rate than the
+                // kit would make the kit inconsistent.
+                let message = match &self.modal {
+                    Some(Modal::ResampleConfirm {
+                        source_rate,
+                        kit_rate,
+                        ..
+                    }) => format!(
+                        "Import cancelled — the sample is {source_rate} Hz but the kit is {kit_rate} Hz."
+                    ),
+                    _ => String::new(),
+                };
+                self.modal = None;
+                if !message.is_empty() {
+                    self.status = Some(message);
+                }
+            }
         }
         Task::none()
+    }
+
+    /// Imports the picked WAV as a new sample and selects it.
+    fn import_sample_file(&mut self, instrument: usize, file: &std::path::Path, resample: bool) {
+        let Some(kit) = &mut self.kit else {
+            return;
+        };
+        match kit.import_sample(instrument, file, resample) {
+            Ok(index) => {
+                let name = kit
+                    .instruments
+                    .get(instrument)
+                    .map(|inst| inst.reference.name.clone())
+                    .unwrap_or_default();
+                self.selection = Selection::Sample(instrument, index);
+                let file_name = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.status = Some(if resample {
+                    format!("Imported '{file_name}' into '{name}' (will be resampled on save).")
+                } else {
+                    format!("Imported '{file_name}' into '{name}'.")
+                });
+            }
+            Err(error) => {
+                self.status = Some(error);
+            }
+        }
     }
 
     fn stop_preview(&mut self) {
@@ -775,6 +836,12 @@ impl App {
             Some(Modal::ConfirmOverwrite(dir)) => modal::confirm_overwrite_modal(dir),
             Some(Modal::DiscardChanges(action)) => modal::discard_changes_modal(*action),
             Some(Modal::Error(message)) => modal::error_modal(message),
+            Some(Modal::ResampleConfirm {
+                instrument,
+                file,
+                source_rate,
+                kit_rate,
+            }) => modal::resample_confirm_modal(*instrument, file, *source_rate, *kit_rate),
             None => match &self.kit {
                 Some(kit) => self.editor_view(kit),
                 None => panels::welcome(),

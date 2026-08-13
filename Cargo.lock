@@ -1097,6 +1097,7 @@ dependencies = [
 name = "dizmo_editor"
 version = "0.1.0"
 dependencies = [
+ "ardftsrc",
  "dizmo_kit",
  "futures",
  "hound",

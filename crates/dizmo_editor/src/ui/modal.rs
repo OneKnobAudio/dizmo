@@ -32,6 +32,12 @@ pub enum Modal {
     ConfirmOverwrite(PathBuf),
     DiscardChanges(DiscardAction),
     Error(String),
+    ResampleConfirm {
+        instrument: usize,
+        file: PathBuf,
+        source_rate: u32,
+        kit_rate: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +215,52 @@ pub fn error_modal<'a>(message: &'a str) -> Element<'a, Message> {
     .style(panel_style);
 
     dialog_stack(panel, Message::DismissError)
+}
+
+/// Asks whether an imported sample whose rate differs from the kit's should
+/// be resampled on save.
+pub fn resample_confirm_modal<'a>(
+    _instrument: usize,
+    file: &'a Path,
+    source_rate: u32,
+    kit_rate: u32,
+) -> Element<'a, Message> {
+    let panel = container(
+        column![
+            text("Sample rate mismatch").size(16).color(TEXT),
+            text(
+                file.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            )
+            .size(11)
+            .color(TEXT),
+            text(format!(
+                "The sample is {source_rate} Hz but the kit is {kit_rate} Hz."
+            ))
+            .size(11)
+            .color(TEXT_DIM),
+            text("Resample it to match the kit when saving?")
+                .size(11)
+                .color(TEXT_DIM),
+            row![
+                button(text("Cancel"))
+                    .on_press(Message::ResampleDeclined)
+                    .style(pill(false)),
+                button(text("Resample on save"))
+                    .on_press(Message::ResampleConfirmed)
+                    .style(pill(true)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .width(Length::Fixed(360.0)),
+    )
+    .width(Length::Fixed(400.0))
+    .padding(20)
+    .style(panel_style);
+
+    dialog_stack(panel, Message::ResampleDeclined)
 }
 
 fn dialog_stack<'a>(
