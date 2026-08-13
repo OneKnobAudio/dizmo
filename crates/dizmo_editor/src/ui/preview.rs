@@ -3,8 +3,8 @@
 use iced::widget::{button, row, slider, text};
 use iced::{Element, Length};
 
-use super::theme::{pill, TEXT, TEXT_DIM};
 use super::Message;
+use super::theme::{TEXT, TEXT_DIM, pill};
 
 /// Preview controls for the selected sample.
 ///

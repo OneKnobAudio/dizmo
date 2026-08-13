@@ -788,7 +788,6 @@ mod tests {
     const DRUMKIT: &str = r#"<drumkit version="2.0">
   <metadata>
     <title>Async Load Kit</title>
-    <defaultmidimap src="midimap.xml"/>
   </metadata>
   <channels>
     <channel name="Kick"/>

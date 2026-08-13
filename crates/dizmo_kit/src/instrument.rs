@@ -2,9 +2,30 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::format_major;
+use crate::is_v1;
 use crate::xml::{attr, load_document, parse_bool, parse_f32, parse_u32, read_file, required_attr};
 use crate::{ChannelMap, Choke, KitError};
+
+/// Instrument metadata from the `<metadata>` node (documented v2 format; real
+/// DrumGizmo parses the node but ignores its contents, so we preserve it for
+/// round-trip fidelity). `image` uses a `filename` attribute.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InstrumentMetadata {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub notes: Option<String>,
+    pub author: Option<String>,
+    pub email: Option<String>,
+    pub website: Option<String>,
+    pub image: Option<InstrumentImage>,
+}
+
+/// An `<image>` element inside instrument metadata.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InstrumentImage {
+    pub filename: String,
+}
 
 /// A single DrumGizmo instrument, resolved against the kit.
 #[derive(Debug, Clone)]
@@ -12,6 +33,7 @@ pub struct Instrument {
     /// Canonical name (from the `drumkit.xml` reference).
     pub name: String,
     pub description: String,
+    pub metadata: InstrumentMetadata,
     /// Instrument format version, e.g. `2.0` or `1.0`.
     pub version: String,
     /// Index of the instrument in the kit (assigned by [`crate::DizmoKit::load`]).
@@ -36,7 +58,7 @@ pub struct Instrument {
 impl Instrument {
     /// Whether this uses the version 2.0 power-based sample selection.
     pub fn is_v2(&self) -> bool {
-        format_major(&self.version) >= 2
+        !is_v1(&self.version)
     }
 
     /// The samples ordered by ascending power: the velocity-layer order used by
@@ -106,10 +128,11 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
     let name = required_attr(&instrument, "name", path)?;
     let version = attr(&instrument, "version").unwrap_or_else(|| "1.0".to_string());
     let description = attr(&instrument, "description").unwrap_or_default();
+    let metadata = parse_metadata(&instrument);
     let base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-    let is_v2 = format_major(&version) >= 2;
+    let is_v2 = !is_v1(&version);
 
-    let channels = instrument
+    let declared_channels = instrument
         .children()
         .find(|child| child.has_tag_name("channels"))
         .map(|channels_node| {
@@ -122,8 +145,7 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
                 })
                 .collect::<Result<Vec<_>, KitError>>()
         })
-        .transpose()?
-        .unwrap_or_default();
+        .transpose()?;
 
     let samples = instrument
         .children()
@@ -201,6 +223,27 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
         .transpose()?
         .unwrap_or_default();
 
+    // The v2 spec does not list a <channels> node in the instrument file, and
+    // DrumGizmo itself derives the instrument channels from the <audiofile>
+    // `channel` attributes (domloader.cc `addOrGetChannel`). Mirror that: use
+    // the explicit node when present, otherwise derive (first-seen order).
+    let channels = match declared_channels {
+        Some(channels) => channels,
+        None => {
+            let mut seen = Vec::new();
+            for sample in &samples {
+                for audio in &sample.audio_files {
+                    if !seen.contains(&audio.channel) {
+                        seen.push(audio.channel.clone());
+                    }
+                }
+            }
+            seen.into_iter()
+                .map(|name| InstrumentChannel { name })
+                .collect()
+        }
+    };
+
     let velocities = if is_v2 {
         Vec::new()
     } else {
@@ -252,6 +295,7 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
     Ok(Instrument {
         name,
         description,
+        metadata,
         version,
         id: 0,
         base_dir,
@@ -262,4 +306,29 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
         samples,
         velocities,
     })
+}
+
+/// Parses the `<metadata>` node of an instrument. Unknown elements are ignored.
+fn parse_metadata(root: &roxmltree::Node) -> InstrumentMetadata {
+    let Some(metadata) = root.children().find(|child| child.has_tag_name("metadata")) else {
+        return InstrumentMetadata::default();
+    };
+
+    let mut result = InstrumentMetadata::default();
+    for child in metadata.children().filter(|c| c.is_element()) {
+        match child.tag_name().name() {
+            "title" => result.title = child.text().map(str::to_owned),
+            "description" => result.description = child.text().map(str::to_owned),
+            "license" => result.license = child.text().map(str::to_owned),
+            "notes" => result.notes = child.text().map(str::to_owned),
+            "author" => result.author = child.text().map(str::to_owned),
+            "email" => result.email = child.text().map(str::to_owned),
+            "website" => result.website = child.text().map(str::to_owned),
+            "image" => {
+                result.image = attr(&child, "filename").map(|filename| InstrumentImage { filename })
+            }
+            _ => {}
+        }
+    }
+    result
 }

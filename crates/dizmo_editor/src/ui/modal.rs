@@ -1,10 +1,14 @@
 //! Modal dialogs. Only the New Kit dialog exists in the skeleton.
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
+use iced::widget::{
+    Space, button, column, container, mouse_area, row, scrollable, text, text_input,
+};
 use iced::{Element, Length};
 
-use super::theme::{backdrop_style, danger_button_style, panel_style, pill, text_input_style, TEXT, TEXT_DIM};
 use super::Message;
+use super::theme::{
+    TEXT, TEXT_DIM, backdrop_style, danger_button_style, panel_style, pill, text_input_style,
+};
 
 #[derive(Debug, Clone)]
 pub enum ModalMessage {
@@ -48,7 +52,9 @@ pub fn new_kit_modal<'a>(draft: &'a NewKitDraft) -> Element<'a, Message> {
         channels = channels.push(
             row![
                 text_input("Channel name", name)
-                    .on_input(move |value| Message::NewKitModal(ModalMessage::RenameChannel(i, value)))
+                    .on_input(
+                        move |value| Message::NewKitModal(ModalMessage::RenameChannel(i, value))
+                    )
                     .style(text_input_style)
                     .width(Length::Fill),
                 button(text("×"))
@@ -71,14 +77,18 @@ pub fn new_kit_modal<'a>(draft: &'a NewKitDraft) -> Element<'a, Message> {
         scrollable(
             column![
                 text("New Kit").size(16).color(TEXT),
-                text("Workflow: channels first, instruments after.").size(11).color(TEXT_DIM),
+                text("Workflow: channels first, instruments after.")
+                    .size(11)
+                    .color(TEXT_DIM),
                 text_input("Kit name", &draft.name)
                     .on_input(|value| Message::NewKitModal(ModalMessage::Name(value)))
                     .style(text_input_style),
                 text_input("Sample rate (Hz)", &draft.samplerate)
                     .on_input(|value| Message::NewKitModal(ModalMessage::Samplerate(value)))
                     .style(text_input_style),
-                text("Output channels  ·  workflow step 1").size(11).color(TEXT_DIM),
+                text("Output channels  ·  workflow step 1")
+                    .size(11)
+                    .color(TEXT_DIM),
                 channels,
                 button(text("+ Add channel"))
                     .on_press(Message::NewKitModal(ModalMessage::AddChannel))

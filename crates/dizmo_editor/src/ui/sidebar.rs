@@ -3,7 +3,7 @@
 use iced::widget::{button, column, container, scrollable, text};
 use iced::{Element, Length};
 
-use super::theme::{pill_button_style, sidebar_style, TEXT};
+use super::theme::{TEXT, pill_button_style, sidebar_style};
 use super::{Message, Selection};
 use crate::model::EditorKit;
 
@@ -18,11 +18,7 @@ pub fn sidebar<'a>(kit: &'a EditorKit, selection: &Selection) -> Element<'a, Mes
     ));
 
     for (i, inst) in kit.instruments.iter().enumerate() {
-        let assigned = inst
-            .reference
-            .channel_map
-            .iter()
-            .any(|m| m.is_main);
+        let assigned = inst.reference.channel_map.iter().any(|m| m.is_main);
         let label = if assigned {
             inst.reference.name.clone()
         } else {

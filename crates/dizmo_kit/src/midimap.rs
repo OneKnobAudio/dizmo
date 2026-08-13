@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use crate::xml::{load_document, parse_note, read_file, required_attr};
 use crate::KitError;
+use crate::xml::{load_document, parse_note, read_file, required_attr};
 
 /// A parsed `midimap.xml`.
 #[derive(Debug, Clone, PartialEq, Default)]

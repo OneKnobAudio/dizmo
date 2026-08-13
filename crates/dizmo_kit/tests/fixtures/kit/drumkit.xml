@@ -7,8 +7,12 @@
     <license>Creative Commons</license>
   </metadata>
   <channels>
-    <channel name="AmbL"/>
-    <channel name="AmbR"/>
+    <channel name="AmbL">
+      <title>Ambience left</title>
+    </channel>
+    <channel name="AmbR">
+      <title>Ambience right</title>
+    </channel>
     <channel name="Kick"/>
     <channel name="Snare"/>
     <channel name="Hihat"/>

@@ -43,6 +43,7 @@ impl EditorKit {
             .map(|(num, name)| KitChannel {
                 name: name.clone(),
                 num,
+                title: None,
             })
             .collect();
         Self {
@@ -74,6 +75,7 @@ impl EditorKit {
         let instrument = Instrument {
             name: name.into(),
             description: String::new(),
+            metadata: Default::default(),
             version: "2.0".into(),
             id,
             base_dir: PathBuf::new(),
@@ -276,6 +278,7 @@ impl EditorKit {
         self.drumkit.channels.push(KitChannel {
             name: name.into(),
             num,
+            title: None,
         });
         self.dirty = true;
         num

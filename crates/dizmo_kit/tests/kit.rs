@@ -40,6 +40,10 @@ fn loads_a_complete_kit() {
         .collect();
     assert_eq!(names, ["AmbL", "AmbR", "Kick", "Snare", "Hihat"]);
     assert_eq!(kit.channels[2].num, 2);
+    // The optional <channel><title> is preserved.
+    assert_eq!(kit.channels[0].title.as_deref(), Some("Ambience left"));
+    assert_eq!(kit.channels[1].title.as_deref(), Some("Ambience right"));
+    assert_eq!(kit.channels[2].title, None);
 
     assert_eq!(kit.instruments.len(), 4);
     let names: Vec<&str> = kit
@@ -54,6 +58,44 @@ fn loads_a_complete_kit() {
 
     // base_dir points at the instrument files' directory.
     assert_eq!(kit.instruments[0].base_dir, fixture_dir());
+
+    // Instruments without a <channels> node derive their channels from the
+    // <audiofile> rows, first-seen order (DrumGizmo's own behavior).
+    assert_eq!(
+        kit.instruments[0]
+            .channels
+            .iter()
+            .map(|channel| channel.name.as_str())
+            .collect::<Vec<_>>(),
+        ["AmbL", "AmbR", "Kick"]
+    );
+    assert_eq!(
+        kit.instruments[1]
+            .channels
+            .iter()
+            .map(|channel| channel.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Snare"]
+    );
+    assert_eq!(
+        kit.instruments[2]
+            .channels
+            .iter()
+            .map(|channel| channel.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Hihat"]
+    );
+
+    // Instrument <metadata> is preserved (title/description/author/license).
+    let kick_metadata = &kit.instruments[0].metadata;
+    assert_eq!(kick_metadata.title.as_deref(), Some("Kick drum"));
+    assert_eq!(kick_metadata.license.as_deref(), Some("Creative Commons"));
+    assert_eq!(kit.instruments[0].description, "Kick drum");
+    assert_eq!(
+        kit.instruments[1].metadata.author.as_deref(),
+        Some("Test Author")
+    );
+    assert_eq!(kit.instruments[3].metadata, Default::default());
 }
 
 #[test]

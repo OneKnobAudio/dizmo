@@ -32,10 +32,7 @@ pub fn theme() -> Theme {
 }
 
 /// A button style with a `selected` accent border (toolbar / tree pills).
-pub fn pill_button_style(
-    selected: bool,
-    status: button::Status,
-) -> button::Style {
+pub fn pill_button_style(selected: bool, status: button::Status) -> button::Style {
     let (background, border) = if selected {
         (FIELD_BG, ACCENT)
     } else if status == button::Status::Hovered {
@@ -59,10 +56,7 @@ pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     move |_theme, status| pill_button_style(selected, status)
 }
 
-pub fn danger_button_style(
-    _theme: &Theme,
-    status: button::Status,
-) -> button::Style {
+pub fn danger_button_style(_theme: &Theme, status: button::Status) -> button::Style {
     let (background, border) = match status {
         button::Status::Hovered => (MUTE_ACTIVE, MUTE_ACTIVE),
         _ => (FIELD_BG, MUTE_ACTIVE),
@@ -79,10 +73,7 @@ pub fn danger_button_style(
     }
 }
 
-pub fn text_input_style(
-    _theme: &Theme,
-    status: text_input::Status,
-) -> text_input::Style {
+pub fn text_input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: Background::Color(FIELD_BG),
         border: Border {
@@ -100,10 +91,7 @@ pub fn text_input_style(
     }
 }
 
-pub fn pick_list_style(
-    _theme: &Theme,
-    status: pick_list::Status,
-) -> pick_list::Style {
+pub fn pick_list_style(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
     let active = pick_list::Style {
         text_color: TEXT,
         placeholder_color: TEXT_DIM,

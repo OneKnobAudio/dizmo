@@ -94,9 +94,15 @@ pub fn parse_str(text: &str, path: &Path) -> Result<DrumKit, KitError> {
     let mut channels = Vec::new();
     for channel in children(drumkit, "channels", "channel") {
         let name = required_attr(&channel, "name", path)?;
+        let title = channel
+            .children()
+            .find(|child| child.has_tag_name("title"))
+            .and_then(|node| node.text())
+            .map(str::to_owned);
         channels.push(KitChannel {
             name,
             num: channels.len(),
+            title,
         });
     }
 

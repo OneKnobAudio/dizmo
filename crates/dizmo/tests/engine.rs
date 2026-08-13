@@ -9,7 +9,6 @@ const DRUMKIT: &str = r#"<drumkit version="2.0">
   <metadata>
     <title>Test Kit</title>
     <description>Engine test fixtures</description>
-    <defaultmidimap src="midimap.xml"/>
   </metadata>
   <channels>
     <channel name="Kick"/>
@@ -144,7 +143,6 @@ fn plays_sample_into_its_output_channel() {
 const TWO_CHANNEL_DRUMKIT: &str = r#"<drumkit version="2.0">
   <metadata>
     <title>Two Channel Kit</title>
-    <defaultmidimap src="midimap.xml"/>
   </metadata>
   <channels>
     <channel name="Kick"/>
@@ -241,7 +239,7 @@ fn channel_without_main_instrument_is_unmapped() {
 #[test]
 fn mappings_include_only_the_primary_channel() {
     let drumkit = r#"<drumkit version="2.0">
-  <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
+  <metadata><title>T</title><description>d</description></metadata>
   <channels>
     <channel name="Kick"/>
     <channel name="AmbL"/>
@@ -282,7 +280,7 @@ fn mappings_include_only_the_primary_channel() {
 #[test]
 fn mappings_fall_back_when_no_main_is_declared() {
     let drumkit = r#"<drumkit version="2.0">
-  <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
+  <metadata><title>T</title><description>d</description></metadata>
   <channels>
     <channel name="Kick"/>
     <channel name="Room"/>
@@ -349,7 +347,7 @@ fn selects_velocity_layer_by_power() {
 #[test]
 fn choke_cuts_target_instantly_when_choketime_is_zero() {
     let drumkit = r#"<drumkit version="2.0">
-  <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
+  <metadata><title>T</title><description>d</description></metadata>
   <channels>
     <channel name="Open"/>
     <channel name="Closed"/>
@@ -402,7 +400,7 @@ fn choke_cuts_target_instantly_when_choketime_is_zero() {
 #[test]
 fn choke_fades_target_over_choketime() {
     let drumkit = r#"<drumkit version="2.0">
-  <metadata><title>T</title><description>d</description><defaultmidimap src="midimap.xml"/></metadata>
+  <metadata><title>T</title><description>d</description></metadata>
   <channels>
     <channel name="Open"/>
     <channel name="Closed"/>
@@ -743,7 +741,7 @@ fn split_block_rendering_matches_contiguous_rendering() {
     }
 }
 
-/// A drumkit without a declared `<defaultmidimap>`.
+/// A drumkit whose midimap is resolved from the kit filename convention.
 const CONVENTION_DRUMKIT: &str = r#"<drumkit version="2.0">
   <metadata><title>Convention Kit</title></metadata>
   <channels><channel name="Kick"/></channels>
@@ -869,7 +867,7 @@ fn setup_multi_channel(tag: &str, channel_count: usize) -> PathBuf {
         .collect();
     let drumkit = format!(
         r#"<drumkit version="2.0">
-  <metadata><defaultmidimap src="midimap.xml"/></metadata>
+  <metadata></metadata>
   <channels>{channels}</channels>
   <instruments>
     <instrument name="Kick" file="inst_kick.xml">
@@ -951,7 +949,7 @@ fn kit_channels_beyond_16_are_ignored_without_crashing() {
 }
 
 const POWER_DRUMKIT: &str = r#"<drumkit version="2.0">
-  <metadata><title>Power Kit</title><defaultmidimap src="midimap.xml"/></metadata>
+  <metadata><title>Power Kit</title></metadata>
   <channels>
     <channel name="Kick"/>
   </channels>
@@ -1011,7 +1009,10 @@ fn powerlist_spreads_adjacent_layers_near_the_velocity_boundary() {
     let dir = setup(
         "powerlist-boundary",
         POWER_DRUMKIT,
-        &[("inst_kick.xml", POWER_INST), ("midimap.xml", POWER_MIDIMAP)],
+        &[
+            ("inst_kick.xml", POWER_INST),
+            ("midimap.xml", POWER_MIDIMAP),
+        ],
         &[
             ("kick1.wav", 1, &[1000; 200]),
             ("kick2.wav", 1, &[2000; 200]),
@@ -1029,7 +1030,10 @@ fn powerlist_spreads_adjacent_layers_near_the_velocity_boundary() {
         "expected both upper layers near the boundary, got {counts:?}"
     );
     // The softest layer is ~13 stddevs from the target: it must never play.
-    assert_eq!(counts[0], 0, "softest layer played unexpectedly: {counts:?}");
+    assert_eq!(
+        counts[0], 0,
+        "softest layer played unexpectedly: {counts:?}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1039,7 +1043,10 @@ fn powerlist_pins_the_extremes_at_min_and_max_velocity() {
     let dir = setup(
         "powerlist-extremes",
         POWER_DRUMKIT,
-        &[("inst_kick.xml", POWER_INST), ("midimap.xml", POWER_MIDIMAP)],
+        &[
+            ("inst_kick.xml", POWER_INST),
+            ("midimap.xml", POWER_MIDIMAP),
+        ],
         &[
             ("kick1.wav", 1, &[1000; 200]),
             ("kick2.wav", 1, &[2000; 200]),

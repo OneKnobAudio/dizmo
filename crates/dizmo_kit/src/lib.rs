@@ -28,7 +28,8 @@ mod xml;
 
 pub use drumkit::{ClickMap, DrumKit, KitImage, KitMetadata};
 pub use instrument::{
-    AudioFile, Instrument, InstrumentChannel, Sample, VelocityGroup, VelocitySampleRef,
+    AudioFile, Instrument, InstrumentChannel, InstrumentImage, InstrumentMetadata, Sample,
+    VelocityGroup, VelocitySampleRef,
 };
 pub use midimap::{MidiMap, MidiMapEntry};
 
@@ -223,6 +224,9 @@ pub struct KitChannel {
     pub name: String,
     /// Index of the channel in the kit's channel list (0-based).
     pub num: usize,
+    /// Optional human-readable title (`<channel><title>…</title></channel>`,
+    /// documented in the spec; DrumGizmo itself does not read it).
+    pub title: Option<String>,
 }
 
 /// A `<channelmap>` inside a drumkit `<instrument>` node: connects an
@@ -244,12 +248,10 @@ pub struct Choke {
     pub choketime_ms: u32,
 }
 
-/// The major part of a DrumGizmo version string (e.g. `2` for `2.1.0`).
-pub(crate) fn format_major(version: &str) -> u32 {
-    version
-        .trim()
-        .split('.')
-        .next()
-        .and_then(|part| part.parse().ok())
-        .unwrap_or(1)
+/// Whether a DrumGizmo version string means the version 1.0 (velocity-group)
+/// format. Matches DrumGizmo's own check in `dgxmlparser.cc`: only the exact
+/// strings `"1"`, `"1.0"` and `"1.0.0"` are v1; everything else is treated as
+/// the v2 power-based format.
+pub(crate) fn is_v1(version: &str) -> bool {
+    matches!(version.trim(), "1" | "1.0" | "1.0.0")
 }

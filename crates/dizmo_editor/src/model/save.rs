@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use dizmo_kit::{DrumKit, Instrument, KitMetadata, MidiMap};
+use dizmo_kit::{DrumKit, Instrument, InstrumentMetadata, KitMetadata, MidiMap};
 
 use crate::model::{EditorInstrument, EditorKit};
 
@@ -355,7 +355,16 @@ fn serialize_drumkit(drumkit: &DrumKit, instrument_files: &[String]) -> String {
     ));
     out.push_str("  <channels>\n");
     for channel in &drumkit.channels {
-        out.push_str(&format!("    <channel name=\"{}\"/>\n", esc(&channel.name)));
+        match &channel.title {
+            Some(title) => {
+                out.push_str(&format!(
+                    "    <channel name=\"{}\">\n      <title>{}</title>\n    </channel>\n",
+                    esc(&channel.name),
+                    esc(title)
+                ));
+            }
+            None => out.push_str(&format!("    <channel name=\"{}\"/>\n", esc(&channel.name))),
+        }
     }
     out.push_str("  </channels>\n");
     out.push_str("  <instruments>\n");
@@ -403,16 +412,16 @@ fn serialize_drumkit(drumkit: &DrumKit, instrument_files: &[String]) -> String {
 fn serialize_instrument(inst: &Instrument, audio_paths: &[String]) -> String {
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    // DrumGizmo requires both the `name` and `description` attributes on the
+    // instrument node (dgxmlparser.cc), so `description` is always written,
+    // even when empty.
     out.push_str(&format!(
-        "<instrument version=\"{}\" name=\"{}\"{}>\n",
+        "<instrument version=\"{}\" name=\"{}\" description=\"{}\">\n",
         esc(&inst.version),
         esc(&inst.name),
-        if inst.description.is_empty() {
-            String::new()
-        } else {
-            format!(" description=\"{}\"", esc(&inst.description))
-        }
+        esc(&inst.description)
     ));
+    out.push_str(&serialize_instrument_metadata(&inst.metadata));
     out.push_str("  <channels>\n");
     for channel in &inst.channels {
         out.push_str(&format!("    <channel name=\"{}\"/>\n", esc(&channel.name)));
@@ -472,6 +481,57 @@ fn serialize_instrument(inst: &Instrument, audio_paths: &[String]) -> String {
     }
 
     out.push_str("</instrument>\n");
+    out
+}
+
+/// The instrument `<metadata>` block (documented v2 format; DrumGizmo ignores
+/// its contents, so it is preserved verbatim). Written only when at least one
+/// field is present.
+fn serialize_instrument_metadata(metadata: &InstrumentMetadata) -> String {
+    let has_fields = metadata.title.is_some()
+        || metadata.description.is_some()
+        || metadata.license.is_some()
+        || metadata.notes.is_some()
+        || metadata.author.is_some()
+        || metadata.email.is_some()
+        || metadata.website.is_some()
+        || metadata.image.is_some();
+    if !has_fields {
+        return String::new();
+    }
+
+    let mut out = String::from("  <metadata>\n");
+    if let Some(title) = &metadata.title {
+        out.push_str(&format!("    <title>{}</title>\n", esc(title)));
+    }
+    if let Some(description) = &metadata.description {
+        out.push_str(&format!(
+            "    <description>{}</description>\n",
+            esc(description)
+        ));
+    }
+    if let Some(license) = &metadata.license {
+        out.push_str(&format!("    <license>{}</license>\n", esc(license)));
+    }
+    if let Some(notes) = &metadata.notes {
+        out.push_str(&format!("    <notes>{}</notes>\n", esc(notes)));
+    }
+    if let Some(author) = &metadata.author {
+        out.push_str(&format!("    <author>{}</author>\n", esc(author)));
+    }
+    if let Some(email) = &metadata.email {
+        out.push_str(&format!("    <email>{}</email>\n", esc(email)));
+    }
+    if let Some(website) = &metadata.website {
+        out.push_str(&format!("    <website>{}</website>\n", esc(website)));
+    }
+    if let Some(image) = &metadata.image {
+        out.push_str(&format!(
+            "    <image filename=\"{}\"/>\n",
+            esc(&image.filename)
+        ));
+    }
+    out.push_str("  </metadata>\n");
     out
 }
 
@@ -803,6 +863,8 @@ mod tests {
         let inst_xml = std::fs::read_to_string(root.join("Kick/Kick.xml")).unwrap();
         assert!(inst_xml.contains("<channel name=\"Kick\"/>"));
         assert!(!inst_xml.contains("<channel name=\"Kick\" main"));
+        // The description attribute is always written (DrumGizmo requires it).
+        assert!(inst_xml.contains("name=\"Kick\" description=\"\""));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -816,6 +878,7 @@ mod tests {
         let mut inst = Instrument {
             name: "HihatClosed".into(),
             description: String::new(),
+            metadata: Default::default(),
             version: "1.0".into(),
             id: 0,
             base_dir: PathBuf::new(),
@@ -949,6 +1012,7 @@ mod tests {
         for (expected, actual) in kit.drumkit.channels.iter().zip(&loaded.drums.channels) {
             assert_eq!(actual.name, expected.name);
             assert_eq!(actual.num, expected.num);
+            assert_eq!(actual.title, expected.title);
         }
 
         assert_eq!(loaded.instruments.len(), kit.instruments.len());
@@ -960,6 +1024,7 @@ mod tests {
 
             assert_eq!(actual.version, expected.instrument.version);
             assert_eq!(actual.description, expected.instrument.description);
+            assert_eq!(actual.metadata, expected.instrument.metadata);
             assert_eq!(actual.channels, expected.instrument.channels);
 
             assert_eq!(actual.samples.len(), expected.instrument.samples.len());
