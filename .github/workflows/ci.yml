@@ -131,8 +131,8 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # Build and bundle the DIZMO Editor standalone app for macOS, Windows and
-  # Linux (AppImage). Artifacts are only generated when a version tag is pushed.
+  # Build and bundle the DIZMO Editor standalone app for macOS and Windows.
+  # Artifacts are only generated when a version tag is pushed.
   editor-package:
     name: Editor ${{ matrix.name }}
     needs: test
@@ -144,7 +144,6 @@ jobs:
           # macOS: both architectures are merged into a universal binary.
           # CI runners are ARM64, so the x86_64 target is installed alongside.
           - { name: macos, os: macos-latest, targets: "aarch64-apple-darwin x86_64-apple-darwin" }
-          - { name: linux, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { name: windows, os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
@@ -155,20 +154,6 @@ jobs:
           targets: ${{ matrix.targets }}
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxkbcommon-dev \
-            pkg-config
 
       - name: Build editor (macOS universal)
         if: runner.os == 'macOS'
@@ -182,48 +167,11 @@ jobs:
             target/x86_64-apple-darwin/release/dizmo_editor \
             -output target/editor/dizmo_editor
 
-      - name: Build editor (Linux)
-        if: runner.os == 'Linux'
-        run: cargo build --release --target ${{ matrix.target }} -p dizmo_editor
-
       - name: Build editor (Windows)
         if: runner.os == 'Windows'
         run: cargo build --release --target ${{ matrix.target }} -p dizmo_editor
 
-      - name: Package AppImage (Linux)
-        if: runner.os == 'Linux'
-        env:
-          ARCH: x86_64
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
-          chmod +x linuxdeploy*.AppImage
-          # CI has no FUSE: extract the AppImages instead of mounting them.
-          # linuxdeploy finds the plugin on PATH under its exact name.
-          ./linuxdeploy-x86_64.AppImage --appimage-extract > /dev/null
-          mv squashfs-root ld-root
-          ./linuxdeploy-plugin-appimage-x86_64.AppImage --appimage-extract > /dev/null
-          mv squashfs-root plugin-root
-          export PATH="$PWD/ld-root/usr/bin:$PWD/plugin-root/usr/bin:$PATH"
-          mkdir -p AppDir/usr/bin \
-            AppDir/usr/share/applications \
-            AppDir/usr/share/icons/hicolor/512x512/apps
-          cp target/${{ matrix.target }}/release/dizmo_editor AppDir/usr/bin/
-          cp packaging/dizmo-editor.desktop AppDir/usr/share/applications/
-          cp packaging/dizmo-editor.png AppDir/usr/share/icons/hicolor/512x512/apps/
-          cp packaging/dizmo-editor.png AppDir/.DirIcon
-          # The output AppImage is named after the AppDir directory.
-          mv AppDir DIZMO_Editor.AppDir
-          linuxdeploy-x86_64 --appdir DIZMO_Editor.AppDir \
-            --desktop-file DIZMO_Editor.AppDir/usr/share/applications/dizmo-editor.desktop \
-            --icon-file DIZMO_Editor.AppDir/usr/share/icons/hicolor/512x512/apps/dizmo-editor.png \
-            --output appimage
-          mv DIZMO_Editor-x86_64.AppImage dist/dizmo-editor-linux.AppImage
-
       - name: Create archive
-        if: runner.os != 'Linux'
         run: |
           mkdir -p dist
           if [[ "${{ runner.os }}" == "Windows" ]]; then
@@ -240,12 +188,13 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # Attach the bundles to a GitHub Release for the pushed version tag. This
-  # runs only after all platform bundles are built and uploaded.
+  # Attach the bundles to a GitHub Release for the pushed version tag. Runs
+  # even if some platform jobs fail, publishing whatever artifacts were
+  # uploaded; if nothing was built at all, no release is created.
   release:
     name: Publish release
     needs: [package, editor-package]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -256,6 +205,7 @@ jobs:
           merge-multiple: true
 
       - name: Publish release
+        if: ${{ hashFiles('dist/**') != '' }}
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
