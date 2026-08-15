@@ -327,12 +327,8 @@ impl App {
             }
             Message::KitName(name) => {
                 let name = crate::model::types::deny_unsafe_characters(&name);
-                if let Some(kit) = &mut self.kit
-                    && kit.drumkit.name != name
-                {
-                    kit.drumkit.name = name.clone();
-                    kit.drumkit.metadata.title = Some(name);
-                    kit.dirty = true;
+                if let Some(kit) = &mut self.kit {
+                    kit.rename_kit(&name);
                 }
             }
             Message::KitDescription(description) => {

@@ -1111,6 +1111,38 @@ mod tests {
     }
 
     #[test]
+    fn renaming_the_kit_updates_the_file_name_and_variation_midimap() {
+        let root = std::env::temp_dir().join(format!(
+            "dizmo_editor_rename_variation_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit("MyKit", 44100.0, &["Kick".into()]);
+        kit.root_dir = Some(root.clone());
+        kit.add_instrument("Kick");
+        kit.add_note(35);
+        kit.midimap.entries[0].instrument = "Kick".into();
+
+        // Renaming the kit to a variation name must move both the entry point
+        // and the midimap onto the variation convention.
+        kit.rename_kit("MyKit_full");
+        save(&mut kit).unwrap();
+
+        assert!(root.join("MyKit_full.xml").exists());
+        assert!(root.join("Midimap_full.xml").exists());
+        assert!(!root.join("MyKit.xml").exists());
+        assert!(!root.join("midimap.xml").exists());
+
+        let loaded = DizmoKit::load(root.join("MyKit_full.xml")).unwrap();
+        assert_eq!(loaded.drums.name, "MyKit_full");
+        assert_eq!(loaded.default_midimap.as_deref(), Some("Midimap_full.xml"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn fixture_kit_round_trips() {
         let fixture = fixture_drumkit();
         let (mut kit, warning) = load(&fixture).unwrap();

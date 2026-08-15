@@ -150,6 +150,20 @@ impl EditorKit {
         self.dirty = true;
     }
 
+    /// Renames the kit: the drumkit name, its metadata title, and the kit
+    /// file name, so the saved `<NAME>.xml` entry point (and the
+    /// `<NAME>_<variation>.xml` / `Midimap_<variation>.xml` convention) stays
+    /// in sync with the edited name. The name must already be sanitized.
+    pub fn rename_kit(&mut self, name: &str) {
+        if self.drumkit.name == name {
+            return;
+        }
+        self.drumkit.name = name.into();
+        self.drumkit.metadata.title = Some(name.into());
+        self.kit_file_name = Some(format!("{name}.xml"));
+        self.dirty = true;
+    }
+
     /// Sets the instrument description (kept in sync with its `<metadata>`
     /// description so the saved file stays coherent).
     pub fn set_instrument_description(&mut self, index: usize, description: &str) {

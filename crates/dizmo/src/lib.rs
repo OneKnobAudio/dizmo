@@ -388,7 +388,7 @@ macro_rules! impl_dizmo_plugin {
         impl Plugin for $plugin {
             const NAME: &'static str = $name;
             const VENDOR: &'static str = "OneKnobAudio";
-            const URL: &'static str = "https://github.com/yorodm/dizmo";
+            const URL: &'static str = "https://github.com/OneKnobAudio/dizmo";
             const EMAIL: &'static str = "info@dizmo.invalid";
             const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
