@@ -34,8 +34,10 @@ pub enum Modal {
     Error(String),
     ResampleConfirm {
         instrument: usize,
-        file: PathBuf,
-        source_rate: u32,
+        /// Every readable file in the picked batch, with its source rate.
+        /// Files whose rate matches the kit's are imported as-is on confirm;
+        /// the rest are flagged for resampling on save.
+        samples: Vec<(PathBuf, u32)>,
         kit_rate: u32,
     },
 }
@@ -217,34 +219,55 @@ pub fn error_modal<'a>(message: &'a str) -> Element<'a, Message> {
     dialog_stack(panel, Message::DismissError)
 }
 
-/// Asks whether an imported sample whose rate differs from the kit's should
-/// be resampled on save.
+/// Asks whether imported samples whose rates differ from the kit's should be
+/// resampled on save. Only the mismatched entries are listed; matching files
+/// in the same batch are imported either way.
 pub fn resample_confirm_modal<'a>(
-    _instrument: usize,
-    file: &'a Path,
-    source_rate: u32,
+    samples: &'a [(PathBuf, u32)],
     kit_rate: u32,
 ) -> Element<'a, Message> {
+    let mismatched: Vec<&(PathBuf, u32)> = samples
+        .iter()
+        .filter(|(_, source_rate)| *source_rate != kit_rate)
+        .collect();
+
+    let mut rows = column![].spacing(4);
+    for (file, source_rate) in &mismatched {
+        rows = rows.push(
+            row![
+                text(
+                    file.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                )
+                .size(11)
+                .color(TEXT),
+                text(format!("{source_rate} Hz")).size(11).color(TEXT_DIM),
+            ]
+            .spacing(8),
+        );
+    }
+    let list: Element<'_, Message> = if mismatched.len() > 6 {
+        scrollable(rows).height(Length::Fixed(160.0)).into()
+    } else {
+        rows.into()
+    };
+
     let panel = container(
         column![
             text("Sample rate mismatch").size(16).color(TEXT),
-            text(
-                file.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            )
-            .size(11)
-            .color(TEXT),
             text(format!(
-                "The sample is {source_rate} Hz but the kit is {kit_rate} Hz."
+                "{} of the selected samples use a rate other than {kit_rate} Hz:",
+                mismatched.len()
             ))
             .size(11)
             .color(TEXT_DIM),
-            text("Resample it to match the kit when saving?")
+            list,
+            text("Resample them to match the kit when saving?")
                 .size(11)
                 .color(TEXT_DIM),
             row![
-                button(text("Cancel"))
+                button(text("Skip mismatched"))
                     .on_press(Message::ResampleDeclined)
                     .style(pill(false)),
                 button(text("Resample on save"))

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=DIZMO Editor
-Comment=Create and edit DrumGizmo kits
-Exec=dizmo_editor
-Icon=dizmo-editor
-Terminal=false
-Categories=Audio;AudioVideoEditing;
-Keywords=drum;kit;samples;drumgizmo;

@@ -1,0 +1,4 @@
+// Windows resource script for the DIZMO Editor executable icon.
+// The matching dizmo_editor.ico file is generated from resources/dizmo_editor.png
+// during CI (or manually) before building on Windows.
+IDI_ICON1 ICON "dizmo_editor.ico"

@@ -103,7 +103,7 @@ pub enum Message {
     ResampleConfirmed,
     ResampleDeclined,
     ImportSample(usize),
-    SampleImported(usize, Option<PathBuf>),
+    SampleImported(usize, Option<Vec<PathBuf>>),
 }
 
 pub struct App {
@@ -662,100 +662,177 @@ impl App {
                 return Task::perform(
                     AsyncFileDialog::new()
                         .add_filter("Audio File", &["wav"])
-                        .pick_file(),
+                        .pick_files(),
                     move |picked| {
                         Message::SampleImported(
                             instrument,
-                            picked.map(|handle| handle.path().to_path_buf()),
+                            picked.map(|handles| {
+                                handles
+                                    .into_iter()
+                                    .map(|handle| handle.path().to_path_buf())
+                                    .collect()
+                            }),
                         )
                     },
                 );
             }
-            Message::SampleImported(instrument, Some(file)) => {
+            Message::SampleImported(instrument, Some(files)) => {
                 let Some(kit) = &self.kit else {
                     return Task::none();
                 };
-                // Warn when the sample's rate does not match the kit's; the
-                // user may accept a resample on save or import as-is.
-                let source_rate = match hound::WavReader::open(&file) {
-                    Ok(reader) => reader.spec().sample_rate,
-                    Err(error) => {
-                        self.status =
-                            Some(format!("'{file:?}' is not a readable WAV file: {error}"));
-                        return Task::none();
-                    }
-                };
                 let kit_rate = kit.drumkit.samplerate.round() as u32;
-                if source_rate != kit_rate && kit_rate > 0 {
+
+                // Probe every picked file up front so an unreadable file
+                // aborts the whole batch instead of importing a partial
+                // selection.
+                let mut samples = Vec::with_capacity(files.len());
+                let mut errors = Vec::new();
+                for file in files {
+                    match hound::WavReader::open(&file) {
+                        Ok(reader) => samples.push((file, reader.spec().sample_rate)),
+                        Err(error) => {
+                            errors.push(format!("'{file:?}' is not a readable WAV file: {error}"));
+                        }
+                    }
+                }
+                if !errors.is_empty() {
+                    self.status = Some(errors.join("; "));
+                    return Task::none();
+                }
+
+                // Warn when any sample's rate does not match the kit's; the
+                // user may accept a resample on save or import as-is.
+                let any_mismatch = kit_rate > 0
+                    && samples
+                        .iter()
+                        .any(|(_, source_rate)| *source_rate != kit_rate);
+                if any_mismatch {
                     self.modal = Some(Modal::ResampleConfirm {
                         instrument,
-                        file,
-                        source_rate,
+                        samples,
                         kit_rate,
                     });
                 } else {
-                    self.import_sample_file(instrument, &file, false);
+                    self.import_sample_file(instrument, &samples);
                 }
             }
             Message::SampleImported(_, None) => {}
             Message::ResampleConfirmed => {
-                let pending = match &self.modal {
-                    Some(Modal::ResampleConfirm {
-                        instrument, file, ..
-                    }) => (*instrument, file.clone()),
-                    _ => return Task::none(),
+                let Some(Modal::ResampleConfirm {
+                    instrument,
+                    samples,
+                    ..
+                }) = self.modal.take()
+                else {
+                    return Task::none();
                 };
-                self.modal = None;
-                self.import_sample_file(pending.0, &pending.1, true);
+                self.import_sample_file(instrument, &samples);
             }
             Message::ResampleDeclined => {
-                // Abort the import: a sample kept at a different rate than the
-                // kit would make the kit inconsistent.
-                let message = match &self.modal {
-                    Some(Modal::ResampleConfirm {
-                        source_rate,
-                        kit_rate,
-                        ..
-                    }) => format!(
-                        "Import cancelled — the sample is {source_rate} Hz but the kit is {kit_rate} Hz."
-                    ),
-                    _ => String::new(),
+                let Some(Modal::ResampleConfirm {
+                    instrument,
+                    samples,
+                    kit_rate,
+                }) = self.modal.take()
+                else {
+                    return Task::none();
                 };
-                self.modal = None;
-                if !message.is_empty() {
-                    self.status = Some(message);
+                // Keep the files that already match the kit's rate and skip
+                // the mismatched ones instead of aborting the whole batch.
+                let total = samples.len();
+                let matching: Vec<(PathBuf, u32)> = samples
+                    .into_iter()
+                    .filter(|(_, source_rate)| *source_rate == kit_rate)
+                    .collect();
+                if matching.is_empty() {
+                    self.status = Some(format!(
+                        "Import cancelled — none of the selected samples match the kit rate of {kit_rate} Hz."
+                    ));
+                    return Task::none();
                 }
+                self.import_sample_file(instrument, &matching);
+                let skipped = total - matching.len();
+                let note = if skipped == 1 {
+                    "1 sample with a different rate was skipped.".to_string()
+                } else {
+                    format!("{skipped} samples with a different rate were skipped.")
+                };
+                self.status = match self.status.take() {
+                    Some(mut status) => {
+                        status.push(' ');
+                        status.push_str(&note);
+                        Some(status)
+                    }
+                    None => Some(note),
+                };
             }
         }
         Task::none()
     }
 
-    /// Imports the picked WAV as a new sample and selects it.
-    fn import_sample_file(&mut self, instrument: usize, file: &std::path::Path, resample: bool) {
+    /// Imports the picked WAVs as new samples and selects the last one.
+    /// Files whose rate differs from the kit's are flagged for resampling on
+    /// save.
+    fn import_sample_file(&mut self, instrument: usize, samples: &[(PathBuf, u32)]) {
         let Some(kit) = &mut self.kit else {
             return;
         };
-        match kit.import_sample(instrument, file, resample) {
-            Ok(index) => {
-                let name = kit
-                    .instruments
-                    .get(instrument)
-                    .map(|inst| inst.reference.name.clone())
-                    .unwrap_or_default();
-                self.selection = Selection::Sample(instrument, index);
-                let file_name = file
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.status = Some(if resample {
-                    format!("Imported '{file_name}' into '{name}' (will be resampled on save).")
-                } else {
-                    format!("Imported '{file_name}' into '{name}'.")
-                });
+        let kit_rate = kit.drumkit.samplerate.round() as u32;
+        let mut imported = 0usize;
+        let mut resampled = 0usize;
+        let mut last_index = None;
+        let mut last_file_name = String::new();
+        let mut errors = Vec::new();
+
+        for (file, source_rate) in samples {
+            let resample = kit_rate > 0 && *source_rate != kit_rate;
+            match kit.import_sample(instrument, file, resample) {
+                Ok(index) => {
+                    imported += 1;
+                    resampled += usize::from(resample);
+                    last_index = Some(index);
+                    last_file_name = file
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                }
+                Err(error) => {
+                    if !errors.contains(&error) {
+                        errors.push(error);
+                    }
+                }
             }
-            Err(error) => {
-                self.status = Some(error);
+        }
+
+        if let Some(index) = last_index {
+            self.selection = Selection::Sample(instrument, index);
+        }
+        let name = kit
+            .instruments
+            .get(instrument)
+            .map(|inst| inst.reference.name.clone())
+            .unwrap_or_default();
+        let mut status = match imported {
+            0 => String::new(),
+            1 if resampled == 1 => {
+                format!("Imported '{last_file_name}' into '{name}' (will be resampled on save).")
             }
+            1 => format!("Imported '{last_file_name}' into '{name}'."),
+            _ => format!("Imported {imported} samples into '{name}'."),
+        };
+        if imported > 1 && resampled > 0 {
+            status.push_str(&format!(" ({resampled} will be resampled on save)."));
+        }
+        if !errors.is_empty() {
+            if status.is_empty() {
+                status.push_str("Import failed: ");
+            } else {
+                status.push_str(" Failed: ");
+            }
+            status.push_str(&errors.join("; "));
+        }
+        if !status.is_empty() {
+            self.status = Some(status);
         }
     }
 
@@ -833,11 +910,8 @@ impl App {
             Some(Modal::DiscardChanges(action)) => modal::discard_changes_modal(*action),
             Some(Modal::Error(message)) => modal::error_modal(message),
             Some(Modal::ResampleConfirm {
-                instrument,
-                file,
-                source_rate,
-                kit_rate,
-            }) => modal::resample_confirm_modal(*instrument, file, *source_rate, *kit_rate),
+                samples, kit_rate, ..
+            }) => modal::resample_confirm_modal(samples, *kit_rate),
             None => match &self.kit {
                 Some(kit) => self.editor_view(kit),
                 None => panels::welcome(),

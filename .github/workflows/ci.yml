@@ -14,15 +14,16 @@ concurrency:
 
 defaults:
   run:
-    # The steps below use bash-isms (arrays, brace expansion) that the default
-    # dash shell on Ubuntu does not support.
+    # Force bash everywhere. The Windows runners default to PowerShell, and the
+    # steps below rely on bash-isms (arrays, `tar`/`cp`, ...).
     shell: bash
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Lint and test once on a single platform; packaging depends on this passing.
+  # Lint and test the three published crates on a single platform; packaging
+  # depends on this passing.
   test:
     name: Lint and test
     runs-on: ubuntu-latest
@@ -37,7 +38,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          # Bound apt's network timeouts: a flaky mirror on the GitHub Ubuntu
+          # runners can otherwise hang this step for 20+ minutes.
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15
           sudo apt-get install -y \
             libasound2-dev \
             libegl1-mesa-dev \
@@ -52,14 +55,15 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy -p dizmo -p dizmo_editor -p dizmo_kit --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test -p dizmo -p dizmo_editor -p dizmo_kit
 
-  # Build and bundle the plugins into CLAP and VST3 bundles. Both plugin
-  # variants (DIZMO and DIZMO Multi) share one cdylib, so each package from
-  # `bundler.toml` yields a single CLAP and a single VST3 bundle.
+  # Build and bundle the plugins into CLAP and VST3 bundles for macOS and
+  # Windows. Both plugin variants (DIZMO and DIZMO Multi) share one cdylib, so
+  # each package from `bundler.toml` yields a single CLAP and a single VST3
+  # bundle.
   #
   # Bundles are only generated when a version tag (`v*`) is pushed; branch
   # pushes and pull requests only run the `test` job.
@@ -75,8 +79,7 @@ jobs:
           # binary with `cargo xtask bundle-universal`. CI runners are ARM64,
           # so the x86_64 target is installed alongside the native host target.
           - { name: macos, os: macos-latest, targets: "aarch64-apple-darwin x86_64-apple-darwin" }
-          - { name: linux, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { name: windows, os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { name: windows, os: windows-latest, targets: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -87,25 +90,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxkbcommon-dev \
-            pkg-config
-
       - name: Package all plugins
         run: |
+          set -euo pipefail
+          # rust-cache restores target/ (including target/bundled) from older
+          # runs; start clean so stale bundles can't leak into the archive.
+          rm -rf target/bundled
+
           # Build and bundle every package listed in bundler.toml in one go
+          packages="$(cargo xtask known-packages)"
           package_args=()
-          for package in $(cargo xtask known-packages); do
+          for package in $packages; do
             package_args+=("-p" "$package")
           done
 
@@ -113,14 +108,15 @@ jobs:
             export MACOSX_DEPLOYMENT_TARGET=10.13
             cargo xtask bundle-universal "${package_args[@]}" --release
           else
-            cargo xtask bundle "${package_args[@]}" --release --target "${{ matrix.target }}"
+            cargo xtask bundle "${package_args[@]}" --release --target "${{ matrix.targets }}"
           fi
 
       - name: Create archive
         run: |
           mkdir -p dist
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            tar -cf "dist/dizmo-${{ matrix.name }}.tar" -C target/bundled .
+            cd target/bundled
+            7z a -tzip ../../dist/dizmo-${{ matrix.name }}.zip .
           else
             tar -czf "dist/dizmo-${{ matrix.name }}.tar.gz" -C target/bundled .
           fi
@@ -131,8 +127,8 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # Build and bundle the DIZMO Editor standalone app for macOS and Windows.
-  # Artifacts are only generated when a version tag is pushed.
+  # Build and bundle the DIZMO Editor standalone app for macOS (.app) and
+  # Windows (.exe). Artifacts are only generated when a version tag is pushed.
   editor-package:
     name: Editor ${{ matrix.name }}
     needs: test
@@ -144,7 +140,7 @@ jobs:
           # macOS: both architectures are merged into a universal binary.
           # CI runners are ARM64, so the x86_64 target is installed alongside.
           - { name: macos, os: macos-latest, targets: "aarch64-apple-darwin x86_64-apple-darwin" }
-          - { name: windows, os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { name: windows, os: windows-latest, targets: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -167,20 +163,52 @@ jobs:
             target/x86_64-apple-darwin/release/dizmo_editor \
             -output target/editor/dizmo_editor
 
+      - name: Create macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # Build a full .icns icon set from the PNG master, upscaling the
+          # 128x128 source to the sizes macOS expects.
+          mkdir -p dizmo_editor.iconset
+          sips -z 16 16 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_16x16.png
+          sips -z 32 32 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_32x32.png
+          sips -z 64 64 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_16x16@2x.png
+          sips -z 128 128 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_128x128.png
+          sips -z 256 256 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_128x128@2x.png
+          sips -z 512 512 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_512x512.png
+          sips -z 1024 1024 crates/dizmo_editor/resources/dizmo_editor.png --out dizmo_editor.iconset/icon_512x512@2x.png
+          iconutil -c icns dizmo_editor.iconset -o crates/dizmo_editor/resources/dizmo_editor.icns
+
+          mkdir -p "DIZMO Editor.app/Contents/MacOS"
+          mkdir -p "DIZMO Editor.app/Contents/Resources"
+          cp target/editor/dizmo_editor "DIZMO Editor.app/Contents/MacOS/"
+          cp crates/dizmo_editor/resources/dizmo_editor.icns "DIZMO Editor.app/Contents/Resources/dizmo_editor.icns"
+
+          version="${GITHUB_REF_NAME#v}"
+          sed "s/VERSION_PLACEHOLDER/$version/" \
+            crates/dizmo_editor/resources/Info.plist \
+            > "DIZMO Editor.app/Contents/Info.plist"
+
+          mkdir -p dist
+          ditto -c -k --keepParent "DIZMO Editor.app" dist/dizmo-editor-macos.zip
+
+      - name: Prepare Windows icon
+        if: runner.os == 'Windows'
+        run: |
+          choco install imagemagick --no-progress
+          magick convert crates/dizmo_editor/resources/dizmo_editor.png \
+            -define icon:auto-resize=256,128,64,48,32,16 \
+            crates/dizmo_editor/resources/dizmo_editor.ico
+
       - name: Build editor (Windows)
         if: runner.os == 'Windows'
-        run: cargo build --release --target ${{ matrix.target }} -p dizmo_editor
+        run: cargo build --release --target ${{ matrix.targets }} -p dizmo_editor
 
-      - name: Create archive
+      - name: Create Windows archive
+        if: runner.os == 'Windows'
         run: |
           mkdir -p dist
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp target/${{ matrix.target }}/release/dizmo_editor.exe dist/
-            (cd dist && tar -cf "dizmo-editor-windows.tar" dizmo_editor.exe)
-          else
-            cp target/editor/dizmo_editor dist/
-            tar -czf "dizmo-editor-macos.tar.gz" -C dist dizmo_editor
-          fi
+          7z a -tzip dist/dizmo-editor-${{ matrix.name }}.zip target/${{ matrix.targets }}/release/dizmo_editor.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -203,6 +231,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+        continue-on-error: true
 
       - name: Publish release
         if: ${{ hashFiles('dist/**') != '' }}
