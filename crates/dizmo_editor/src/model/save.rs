@@ -971,6 +971,20 @@ mod tests {
         assert!(kit.instruments[inst].instrument.channels.is_empty());
         assert!(kit.instruments[inst].reference.channel_map.is_empty());
 
+        // Marking an unassigned channel as main assigns it as well.
+        kit.set_channel_main(inst, "Kick", true);
+        assert_eq!(kit.instruments[inst].instrument.channels.len(), 1);
+        assert_eq!(kit.instruments[inst].reference.channel_map.len(), 1);
+        assert!(kit.instruments[inst].reference.channel_map[0].is_main);
+        assert_eq!(
+            kit.instruments[inst].instrument.channels[0].name, "Kick",
+            "the instrument channel is created for the new assignment"
+        );
+        // Unmarking leaves the assignment in place.
+        kit.set_channel_main(inst, "Kick", false);
+        assert_eq!(kit.instruments[inst].reference.channel_map.len(), 1);
+        assert!(!kit.instruments[inst].reference.channel_map[0].is_main);
+
         // Assign Kick and mark it main.
         kit.toggle_channel_assignment(inst, "Kick");
         kit.set_channel_main(inst, "Kick", true);

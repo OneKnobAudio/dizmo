@@ -304,7 +304,18 @@ impl EditorKit {
     }
 
     /// Sets the `main` flag on the channel map for the given kit channel.
+    /// Marking a channel as main also assigns it to the instrument when it is
+    /// not assigned yet (the main flag needs a channel map entry to live on).
     pub fn set_channel_main(&mut self, instrument: usize, channel_name: &str, is_main: bool) {
+        let assigned = self.instruments.get(instrument).is_some_and(|inst| {
+            inst.reference
+                .channel_map
+                .iter()
+                .any(|m| m.in_name == channel_name)
+        });
+        if !assigned && is_main {
+            self.toggle_channel_assignment(instrument, channel_name);
+        }
         let Some(inst) = self.instruments.get_mut(instrument) else {
             return;
         };
