@@ -2,6 +2,7 @@
 name = "dizmo_editor"
 version.workspace = true
 edition.workspace = true
+license = "GPL-2.0-or-later"
 # Ensure the icon source and Windows resource script ship with the crate so
 # CI (and local Windows builds) can embed the icon into the executable.
 include = ["src/**/*", "resources/**/*", "build.rs"]

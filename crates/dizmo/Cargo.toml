@@ -2,7 +2,7 @@
 name = "dizmo"
 version.workspace = true
 edition.workspace = true
-
+license= "GPL-2.0-or-later"
 [dependencies]
 dizmo_kit = { path = "../dizmo_kit" }
 nice-plug = "0.2.3"

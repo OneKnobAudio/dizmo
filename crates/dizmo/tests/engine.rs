@@ -345,6 +345,72 @@ fn selects_velocity_layer_by_power() {
 }
 
 #[test]
+fn equal_power_samples_are_all_reachable_and_do_not_repeat() {
+    // Four samples at the exact same power: the legacy behavior always played
+    // the first one (ties went to the lowest index). They must all be
+    // reachable now, without repeating the same sample on consecutive hits.
+    let inst = r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.5">
+      <audiofile channel="Kick" file="k1.wav" filechannel="1"/>
+    </sample>
+    <sample name="Kick-2" power="0.5">
+      <audiofile channel="Kick" file="k2.wav" filechannel="1"/>
+    </sample>
+    <sample name="Kick-3" power="0.5">
+      <audiofile channel="Kick" file="k3.wav" filechannel="1"/>
+    </sample>
+    <sample name="Kick-4" power="0.5">
+      <audiofile channel="Kick" file="k4.wav" filechannel="1"/>
+    </sample>
+  </samples>
+</instrument>"#;
+    let dir = setup(
+        "equal-power",
+        DRUMKIT,
+        &[("inst_kick.xml", inst), ("midimap.xml", MIDIMAP)],
+        &[
+            ("k1.wav", 1, &[1000]),
+            ("k2.wav", 1, &[2000]),
+            ("k3.wav", 1, &[3000]),
+            ("k4.wav", 1, &[4000]),
+        ],
+    );
+    let (kit, bank, midimap) = load(&dir);
+    let mut engine = Engine::new(kit, bank, midimap);
+
+    // Trigger 120 hits at the same velocity. Each hit's first output frame
+    // identifies the sample: the 1-frame WAVs have distinct first values, and
+    // the attack gain is identical for every hit.
+    let mut picks = Vec::new();
+    for _ in 0..120 {
+        engine.note_on(36, 100);
+        let out = run(&mut engine, 1, 1);
+        let value = (out[0][0] / attack_gain(0, 44100.0) * 32768.0).round() as i32;
+        let pick = [1000, 2000, 3000, 4000]
+            .iter()
+            .position(|&v| v == value)
+            .expect("unexpected sample value in output");
+        picks.push(pick);
+    }
+
+    // Every same-power alternate is selected at least once.
+    let distinct: std::collections::HashSet<usize> = picks.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        4,
+        "all equal-power alternates must be reachable"
+    );
+    // Anti-repetition: no consecutive hits play the same sample.
+    for pair in picks.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "consecutive hits repeated the same sample"
+        );
+    }
+}
+
+#[test]
 fn choke_cuts_target_instantly_when_choketime_is_zero() {
     let drumkit = r#"<drumkit version="2.0">
   <metadata><title>T</title><description>d</description></metadata>

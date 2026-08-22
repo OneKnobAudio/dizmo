@@ -29,6 +29,22 @@ pub enum Shortcut {
 const SIDEBAR_WIDTH: f32 = 230.0;
 const DEFAULT_SAMPLERATE: f64 = 48000.0;
 
+/// Channel template used by the New Kit dialog's "Default Channels" button:
+/// the classic small acoustic kit layout.
+const DEFAULT_CHANNELS: [&str; 11] = [
+    "Kick",
+    "Snare",
+    "HiHat",
+    "TomHi",
+    "TomMid",
+    "TomLow",
+    "TomFloor",
+    "Ride",
+    "Crash",
+    "OverheadR",
+    "OverheadL",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
     Kit,
@@ -193,6 +209,20 @@ impl App {
                         ModalMessage::RemoveChannel(i) => {
                             if i < draft.channels.len() {
                                 draft.channels.remove(i);
+                            }
+                        }
+                        ModalMessage::DefaultChannels => {
+                            // Append every template channel the draft does
+                            // not have yet (case-insensitive), leaving any
+                            // hand-added channels untouched.
+                            for name in DEFAULT_CHANNELS {
+                                let already_there = draft
+                                    .channels
+                                    .iter()
+                                    .any(|existing| existing.trim().eq_ignore_ascii_case(name));
+                                if !already_there {
+                                    draft.channels.push(name.to_string());
+                                }
                             }
                         }
                     }

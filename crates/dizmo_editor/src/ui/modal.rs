@@ -19,6 +19,7 @@ pub enum ModalMessage {
     RenameChannel(usize, String),
     AddChannel,
     RemoveChannel(usize),
+    DefaultChannels,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,9 +110,15 @@ pub fn new_kit_modal<'a>(draft: &'a NewKitDraft) -> Element<'a, Message> {
                     .size(11)
                     .color(TEXT_DIM),
                 channels,
-                button(text("+ Add channel"))
-                    .on_press(Message::NewKitModal(ModalMessage::AddChannel))
-                    .style(pill(false)),
+                row![
+                    button(text("+ Add channel"))
+                        .on_press(Message::NewKitModal(ModalMessage::AddChannel))
+                        .style(pill(false)),
+                    button(text("Default Channels"))
+                        .on_press(Message::NewKitModal(ModalMessage::DefaultChannels))
+                        .style(pill(false)),
+                ]
+                .spacing(8),
                 row![
                     button(text("Cancel"))
                         .on_press(Message::NewKitCancel)

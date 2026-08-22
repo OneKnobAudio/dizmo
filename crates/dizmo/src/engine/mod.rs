@@ -460,9 +460,12 @@ impl Engine {
 
     /// Version 2.0 sample selection (the PowerList). Draws a Gaussian target
     /// power centered on the velocity's position in the instrument's power
-    /// range, then picks the sample whose power is closest. If the draw lands
-    /// on the same sample as the previous hit, it redraws up to [`MAX_RETRIES`]
-    /// times (DrumGizmo's anti-repetition).
+    /// range, then picks one of the samples whose power is closest to the
+    /// draw. Samples sharing a power are exactly tied, so equal-power
+    /// (round-robin style) alternates are picked at random instead of always
+    /// taking the first one. If the pick repeats the previously chosen
+    /// sample, it redraws up to [`MAX_RETRIES`] times (DrumGizmo's
+    /// anti-repetition).
     fn select_v2_sample(&mut self, instrument_index: usize, velocity: f32) -> Option<usize> {
         let samples = &self.kit.instruments[instrument_index].samples;
         if samples.is_empty() {
@@ -484,19 +487,27 @@ impl Engine {
             let x = (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos();
             let lvl = mean + stddev * x + power_min;
 
-            // The sample whose power is closest to the draw. First candidate
-            // wins ties (only strictly-smaller distances replace it).
-            let mut best = 0usize;
+            // The closest distance a sample can have to the draw, then a
+            // reservoir pick among every sample tied at exactly that distance
+            // (identical powers tie exactly). Both passes avoid allocation:
+            // the engine must not allocate while processing.
             let mut best_dist = f32::INFINITY;
+            for sample in samples {
+                best_dist = best_dist.min((sample.power - lvl).abs());
+            }
+            let mut candidate = None;
+            let mut seen = 0usize;
             for (index, sample) in samples.iter().enumerate() {
-                let dist = (sample.power - lvl).abs();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best = index;
+                if (sample.power - lvl).abs() == best_dist {
+                    seen += 1;
+                    // Reservoir: adopt the new index with probability 1/seen,
+                    // so every tied sample is equally likely.
+                    if self.rng.next_u32().is_multiple_of(seen as u32) {
+                        candidate = Some(index);
+                    }
                 }
             }
 
-            let candidate = Some(best);
             if self.last_v2_sample[instrument_index] != candidate || retries == 0 {
                 break candidate;
             }
@@ -613,6 +624,15 @@ struct XorShift(u64);
 impl XorShift {
     fn new() -> Self {
         Self(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        (x >> 32) as u32
     }
 
     fn next_f32(&mut self) -> f32 {
