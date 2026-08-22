@@ -957,6 +957,31 @@ mod tests {
     }
 
     #[test]
+    fn default_midi_notes_add_the_gm_drum_range_unassigned() {
+        let mut kit = EditorKit::new_kit("GM Test", 44100.0, &["Kick".into()]);
+
+        kit.add_default_midi_notes();
+
+        // Notes 35..=81, the GM channel 10 percussion range: 47 notes,
+        // sorted, all left unassigned for the user to map.
+        assert_eq!(kit.midimap.entries.len(), 81 - 35 + 1);
+        for (i, entry) in kit.midimap.entries.iter().enumerate() {
+            assert_eq!(entry.note, 35 + i as u8);
+            assert!(
+                entry.instrument.is_empty(),
+                "GM notes are added unassigned: {}",
+                entry.instrument
+            );
+        }
+
+        // Idempotent: a second click does not duplicate rows, and notes the
+        // user added manually stay.
+        kit.add_note(60);
+        kit.add_default_midi_notes();
+        assert_eq!(kit.midimap.entries.len(), 81 - 35 + 1);
+    }
+
+    #[test]
     fn channel_assignment_and_main_flag_round_trip() {
         let root =
             std::env::temp_dir().join(format!("dizmo_editor_channels_{}", std::process::id()));

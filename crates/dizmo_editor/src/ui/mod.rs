@@ -108,6 +108,7 @@ pub enum Message {
     PreviewVolume(f32),
     MidimapNote(String),
     MidimapAdd,
+    MidimapDefault,
     MidimapAssign(usize, Option<usize>),
     MidimapRemove(usize),
     DismissStatus,
@@ -668,6 +669,11 @@ impl App {
                 {
                     kit.add_note(note);
                     self.midimap_note.clear();
+                }
+            }
+            Message::MidimapDefault => {
+                if let Some(kit) = &mut self.kit {
+                    kit.add_default_midi_notes();
                 }
             }
             Message::MidimapAssign(row, instrument) => {

@@ -505,6 +505,9 @@ pub fn midimap_panel<'a>(kit: &'a EditorKit, note_draft: &'a str) -> Element<'a,
             button(text("+ Map note"))
                 .on_press(Message::MidimapAdd)
                 .style(pill(false)),
+            button(text("GM drum notes"))
+                .on_press(Message::MidimapDefault)
+                .style(pill(false)),
         ]
         .spacing(6),
     ]

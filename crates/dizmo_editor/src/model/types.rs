@@ -6,6 +6,11 @@ use dizmo_kit::{
     MidiMap, MidiMapEntry, Sample,
 };
 
+/// The General MIDI drum note range: notes 35-81 (percussion on GM channel
+/// 10). Used by the editor's default mapping to pre-fill the midimap rows;
+/// the instruments are left to the user.
+const GM_DRUM_NOTES: std::ops::RangeInclusive<u8> = 35..=81;
+
 /// The editable kit: the drumkit plus each instrument kept paired with the
 /// `InstrumentRef` that references it (so we always know its XML file path).
 #[derive(Debug, Clone)]
@@ -507,6 +512,15 @@ impl EditorKit {
         });
         self.midimap.entries.sort_by_key(|e| e.note);
         self.dirty = true;
+    }
+
+    /// Adds the General MIDI drum notes (35-81, the GM channel 10 percussion
+    /// range) as unmapped rows — the user assigns instruments to them
+    /// afterwards. Notes already present are left untouched.
+    pub fn add_default_midi_notes(&mut self) {
+        for note in GM_DRUM_NOTES {
+            self.add_note(note);
+        }
     }
 
     pub fn unmap_note(&mut self, index: usize) {
