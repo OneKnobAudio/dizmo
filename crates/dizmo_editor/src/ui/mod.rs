@@ -86,7 +86,7 @@ pub enum Message {
     RemoveSample(usize, usize),
     RenameSample(usize, usize, String),
     SamplePower(usize, usize, f32),
-    SampleNormalized(usize, usize, bool),
+    InstrumentNormalized(usize, bool),
     Preview(usize, usize),
     StopPreview,
     PreviewVolume(f32),
@@ -572,9 +572,9 @@ impl App {
                     kit.set_sample_power(i, s, value);
                 }
             }
-            Message::SampleNormalized(i, s, checked) => {
+            Message::InstrumentNormalized(i, checked) => {
                 if let Some(kit) = &mut self.kit {
-                    kit.set_sample_normalized(i, s, checked);
+                    kit.set_instrument_normalized(i, checked);
                 }
             }
             Message::Preview(instrument, sample) => {

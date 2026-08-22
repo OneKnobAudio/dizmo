@@ -836,6 +836,24 @@ mod tests {
             deduped
         );
 
+        // Powers are spread evenly across the samples in list order:
+        // the i-th of N samples lands in the i-th cell of 0..1.
+        let powers: Vec<f32> = kit.instruments[inst]
+            .instrument
+            .samples
+            .iter()
+            .map(|s| s.power)
+            .collect();
+        let expected: Vec<f32> = (0..powers.len())
+            .map(|i| (i as f32 + 0.5) / powers.len() as f32)
+            .collect();
+        for (actual, expected) in powers.iter().zip(&expected) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "power {actual} != expected {expected}"
+            );
+        }
+
         // An instrument with no channels cannot import.
         let empty = kit.add_instrument("Empty");
         assert!(kit.import_sample(empty, &wav, false).is_err());

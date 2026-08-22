@@ -205,6 +205,16 @@ pub fn kit_panel<'a>(kit: &'a EditorKit, samplerate_text: &'a str) -> Element<'a
 
 pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Message> {
     let inst = &kit.instruments[index];
+    let all_normalized = inst.instrument.samples.iter().all(|s| s.normalized);
+    // Needs samples to be meaningful: without any the checkbox is disabled
+    // (and unchecked) since there is nothing to mark.
+    let normalized = if inst.instrument.samples.is_empty() {
+        checkbox(false).label("Normalize samples")
+    } else {
+        checkbox(all_normalized)
+            .label("Normalize samples")
+            .on_toggle(move |checked| Message::InstrumentNormalized(index, checked))
+    };
 
     let assigned_names: Vec<&str> = inst
         .instrument
@@ -334,6 +344,7 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
             &inst.instrument.description,
             move |description| Message::InstrumentDescription(index, description),
         ),
+        normalized,
         column![
             text("Channel map  ·  workflow step 4")
                 .size(11)
@@ -419,9 +430,6 @@ pub fn sample_panel<'a>(
         ]
         .align_y(iced::Alignment::Center)
         .spacing(8),
-        checkbox(sample.normalized)
-            .label("Normalized")
-            .on_toggle(move |checked| Message::SampleNormalized(instrument, sample_idx, checked)),
         iced::widget::rule::horizontal(1.0),
         text("Audio files").size(12).color(TEXT),
         audio_files,

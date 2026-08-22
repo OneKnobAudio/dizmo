@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
     # The `package`, `editor-package` and `release` jobs only run when a version tag is pushed.
     tags: ["v*"]
   pull_request:

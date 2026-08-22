@@ -376,6 +376,13 @@ impl EditorKit {
             resample: resample_target,
             audio_files,
         });
+        // Keep the power list spread evenly across the instrument's samples:
+        // the i-th sample (in list order) sits in the i-th cell of the 0..1
+        // power range, so selection tracks the sample ordering.
+        let count = inst.instrument.samples.len();
+        for (i, sample) in inst.instrument.samples.iter_mut().enumerate() {
+            sample.power = (i as f32 + 0.5) / count as f32;
+        }
         self.dirty = true;
         Ok(inst.instrument.samples.len() - 1)
     }
@@ -402,15 +409,25 @@ impl EditorKit {
         }
     }
 
-    pub fn set_sample_normalized(&mut self, instrument: usize, sample: usize, normalized: bool) {
-        if let Some(s) = self
-            .instruments
-            .get_mut(instrument)
-            .and_then(|inst| inst.instrument.samples.get_mut(sample))
+    /// Sets the normalized mark for the whole instrument: every sample gets
+    /// `normalized`, so the instrument's samples stay uniform. Legacy kits
+    /// with mixed per-sample marks keep them until this is used.
+    pub fn set_instrument_normalized(&mut self, instrument: usize, normalized: bool) {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return;
+        };
+        if inst
+            .instrument
+            .samples
+            .iter()
+            .all(|s| s.normalized == normalized)
         {
-            s.normalized = normalized;
-            self.dirty = true;
+            return;
         }
+        for sample in &mut inst.instrument.samples {
+            sample.normalized = normalized;
+        }
+        self.dirty = true;
     }
 
     pub fn add_channel(&mut self, name: &str) -> usize {
