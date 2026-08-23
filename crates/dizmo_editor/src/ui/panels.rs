@@ -209,10 +209,10 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
     // Needs samples to be meaningful: without any the checkbox is disabled
     // (and unchecked) since there is nothing to mark.
     let normalized = if inst.instrument.samples.is_empty() {
-        checkbox(false).label("Normalize samples")
+        checkbox(false).label("Normalized samples")
     } else {
         checkbox(all_normalized)
-            .label("Normalize samples")
+            .label("Normalized samples")
             .on_toggle(move |checked| Message::InstrumentNormalized(index, checked))
     };
 

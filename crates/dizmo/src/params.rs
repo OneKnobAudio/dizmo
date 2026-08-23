@@ -1,7 +1,9 @@
+use nice_plug::params::persist::PersistentField;
 use nice_plug::prelude::*;
 use nice_plug_iced::WindowState;
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// The number of possible channel strips / outputs.
 pub const NUM_CHANNELS: usize = 16;
@@ -15,6 +17,25 @@ pub static AUX_OUTPUT_NAMES: [&str; NUM_CHANNELS] = [
     "Ch 12", "Ch 13", "Ch 14", "Ch 15", "Ch 16",
 ];
 
+/// The last loaded kit's `drumkit.xml` path, persisted in the plugin state so
+/// hosts restore it when a project loads. Written on the GUI/initialize
+/// thread whenever a kit load starts; read by the state serializer on save.
+#[derive(Debug, Clone, Default)]
+pub struct PersistedKitFile(pub Arc<Mutex<Option<PathBuf>>>);
+
+impl<'a> PersistentField<'a, Option<PathBuf>> for PersistedKitFile {
+    fn set(&self, new_value: Option<PathBuf>) {
+        *self.0.lock().expect("kit file lock poisoned") = new_value;
+    }
+
+    fn map<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&Option<PathBuf>) -> R,
+    {
+        f(&self.0.lock().expect("kit file lock poisoned"))
+    }
+}
+
 /// All parameters and persistent state for the DIZMO plugin.
 #[derive(Params)]
 pub struct DizmoParams {
@@ -22,6 +43,11 @@ pub struct DizmoParams {
     /// restored.
     #[persist = "window-state"]
     pub editor_state: Arc<WindowState>,
+
+    /// The last loaded kit's `drumkit.xml` path, restored by hosts that save
+    /// plugin state (project save/load and presets).
+    #[persist = "kit-file"]
+    pub kit_file: PersistedKitFile,
 
     /// One set of parameters per channel strip.
     #[nested(array)]
@@ -143,6 +169,7 @@ impl Default for DizmoParams {
     fn default() -> Self {
         Self {
             editor_state: crate::ui::default_editor_state(),
+            kit_file: PersistedKitFile::default(),
             channels: std::array::from_fn(ChannelParams::new),
         }
     }

@@ -114,6 +114,10 @@ struct AudioCore {
     /// An atomic flag the audio thread sets when a note lights an indicator;
     /// the iced editor polls it before every draw and redraws when set.
     notifier: PollSubNotifier,
+    /// The kit-load dispatcher installed by `task_executor`. Lets the state
+    /// restore path reuse the async loader thread instead of blocking
+    /// `initialize` on kit decoding.
+    load_task: Option<Arc<dyn Fn(LoadTask) + Send + Sync>>,
 }
 
 impl AudioCore {
@@ -130,6 +134,7 @@ impl AudioCore {
             levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
             held_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
             notifier: PollSubNotifier::new(),
+            load_task: None,
         }
     }
 
@@ -377,11 +382,47 @@ macro_rules! impl_dizmo_plugin {
                 &mut self,
                 kit_path: impl AsRef<Path>,
             ) -> Result<(), engine::EngineLoadError> {
-                let mut engine = engine::load_engine(kit_path, Some(self.core.sample_rate as u32))?;
+                let path = kit_path.as_ref().to_path_buf();
+                *self
+                    .params
+                    .kit_file
+                    .0
+                    .lock()
+                    .expect("kit file lock poisoned") = Some(path.clone());
+                let mut engine = engine::load_engine(&path, Some(self.core.sample_rate as u32))?;
                 engine.set_sample_rate(self.core.sample_rate);
                 self.core.notify_loaded(&engine);
                 self.core.engine = Some(engine);
                 Ok(())
+            }
+
+            /// Reloads the kit recorded in the persisted state, if the engine is
+            /// not loaded yet. Hosts restore plugin state *before* re-running
+            /// `initialize`, so this is where a saved project gets its kit back.
+            /// The load runs on the async loader thread when it is available
+            /// (always, in a host), so initialization never blocks on decoding.
+            fn restore_persisted_kit(&mut self) {
+                let path = self
+                    .params
+                    .kit_file
+                    .0
+                    .lock()
+                    .expect("kit file lock poisoned")
+                    .clone();
+                if self.core.engine.is_none()
+                    && let Some(path) = path
+                {
+                    if let Some(load_task) = &self.core.load_task {
+                        load_task(LoadTask::LoadKit { path });
+                    } else if let Err(error) = self.load_kit(&path) {
+                        // No async machinery (e.g. tests): fall back to a
+                        // synchronous load.
+                        eprintln!(
+                            "[dizmo] failed to restore kit '{}': {error}",
+                            path.display()
+                        );
+                    }
+                }
             }
         }
 
@@ -405,7 +446,11 @@ macro_rules! impl_dizmo_plugin {
             }
 
             fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+                // Record the kit path in the persisted state so hosts can
+                // restore the kit when the project loads again.
+                let params = self.params.clone();
                 let load_kit: Arc<dyn Fn(PathBuf) + Send + Sync> = Arc::new(move |path| {
+                    *params.kit_file.0.lock().expect("kit file lock poisoned") = Some(path.clone());
                     async_executor.execute_background(LoadTask::LoadKit { path });
                 });
                 // Point the kit-status channel at this fresh editor window, so
@@ -449,72 +494,78 @@ macro_rules! impl_dizmo_plugin {
                 let host_sample_rate = self.core.host_sample_rate.clone();
                 let status_tx = self.core.status_tx.clone();
                 let kit_info = self.core.kit_info.clone();
-                Box::new(move |task: LoadTask| {
-                    let LoadTask::LoadKit { path } = task;
-                    let engine_tx = engine_tx.clone();
-                    let status_tx = status_tx.clone();
-                    let kit_info = kit_info.clone();
-                    let host_sample_rate = host_sample_rate.clone();
-                    std::thread::spawn(move || {
-                        let rate = host_sample_rate.load(Ordering::Relaxed);
-                        let load = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            engine::load_engine_with_progress(
-                                &path,
-                                (rate != 0).then_some(rate),
-                                &mut |loaded, total| {
+                let load_task: Arc<dyn Fn(LoadTask) + Send + Sync> =
+                    Arc::new(move |task: LoadTask| {
+                        let LoadTask::LoadKit { path } = task;
+                        let engine_tx = engine_tx.clone();
+                        let status_tx = status_tx.clone();
+                        let kit_info = kit_info.clone();
+                        let host_sample_rate = host_sample_rate.clone();
+                        std::thread::spawn(move || {
+                            let rate = host_sample_rate.load(Ordering::Relaxed);
+                            let load =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    engine::load_engine_with_progress(
+                                        &path,
+                                        (rate != 0).then_some(rate),
+                                        &mut |loaded, total| {
+                                            let slot =
+                                                status_tx.lock().expect("status tx mutex poisoned");
+                                            if let Some(tx) = slot.as_ref() {
+                                                let _ =
+                                                    tx.send(KitStatus::Progress { loaded, total });
+                                            }
+                                        },
+                                    )
+                                }));
+                            match load {
+                                Ok(Ok((mut engine, warnings))) => {
+                                    engine.set_sample_rate(if rate == 0 {
+                                        44100.0
+                                    } else {
+                                        rate as f32
+                                    });
+                                    let info = KitInfo {
+                                        name: engine.kit_name().to_string(),
+                                        channels: engine.channel_names(),
+                                        mappings: engine.mappings(),
+                                        warnings,
+                                    };
+                                    // Record the kit BEFORE sending the engine:
+                                    // the channel send is what wakes the receiver,
+                                    // so anything it expects to read afterwards
+                                    // (like `kit_info`) must already be written.
+                                    *kit_info.lock().expect("kit info mutex poisoned") =
+                                        Some(info.clone());
+                                    let _ = engine_tx.send(Ok(engine));
                                     let slot = status_tx.lock().expect("status tx mutex poisoned");
                                     if let Some(tx) = slot.as_ref() {
-                                        let _ = tx.send(KitStatus::Progress { loaded, total });
+                                        let _ = tx.send(info.to_status());
                                     }
-                                },
-                            )
-                        }));
-                        match load {
-                            Ok(Ok((mut engine, warnings))) => {
-                                engine.set_sample_rate(if rate == 0 {
-                                    44100.0
-                                } else {
-                                    rate as f32
-                                });
-                                let info = KitInfo {
-                                    name: engine.kit_name().to_string(),
-                                    channels: engine.channel_names(),
-                                    mappings: engine.mappings(),
-                                    warnings,
-                                };
-                                // Record the kit BEFORE sending the engine:
-                                // the channel send is what wakes the receiver,
-                                // so anything it expects to read afterwards
-                                // (like `kit_info`) must already be written.
-                                *kit_info.lock().expect("kit info mutex poisoned") =
-                                    Some(info.clone());
-                                let _ = engine_tx.send(Ok(engine));
-                                let slot = status_tx.lock().expect("status tx mutex poisoned");
-                                if let Some(tx) = slot.as_ref() {
-                                    let _ = tx.send(info.to_status());
+                                }
+                                Ok(Err(err)) => {
+                                    let message = err.to_string();
+                                    eprintln!("[dizmo] failed to load kit: {message}");
+                                    let _ = engine_tx.send(Err(message.clone()));
+                                    let slot = status_tx.lock().expect("status tx mutex poisoned");
+                                    if let Some(tx) = slot.as_ref() {
+                                        let _ = tx.send(KitStatus::Failed(message));
+                                    }
+                                }
+                                Err(payload) => {
+                                    let message = panic_message(&payload);
+                                    eprintln!("[dizmo] kit loader thread panicked: {message}");
+                                    let _ = engine_tx.send(Err(message.clone()));
+                                    let slot = status_tx.lock().expect("status tx mutex poisoned");
+                                    if let Some(tx) = slot.as_ref() {
+                                        let _ = tx.send(KitStatus::Failed(message));
+                                    }
                                 }
                             }
-                            Ok(Err(err)) => {
-                                let message = err.to_string();
-                                eprintln!("[dizmo] failed to load kit: {message}");
-                                let _ = engine_tx.send(Err(message.clone()));
-                                let slot = status_tx.lock().expect("status tx mutex poisoned");
-                                if let Some(tx) = slot.as_ref() {
-                                    let _ = tx.send(KitStatus::Failed(message));
-                                }
-                            }
-                            Err(payload) => {
-                                let message = panic_message(&payload);
-                                eprintln!("[dizmo] kit loader thread panicked: {message}");
-                                let _ = engine_tx.send(Err(message.clone()));
-                                let slot = status_tx.lock().expect("status tx mutex poisoned");
-                                if let Some(tx) = slot.as_ref() {
-                                    let _ = tx.send(KitStatus::Failed(message));
-                                }
-                            }
-                        }
+                        });
                     });
-                })
+                self.core.load_task = Some(load_task.clone());
+                Box::new(move |task| load_task(task))
             }
 
             fn initialize(
@@ -526,6 +577,10 @@ macro_rules! impl_dizmo_plugin {
                 self.core.set_sample_rate(buffer_config.sample_rate);
                 self.core
                     .set_block_size(buffer_config.max_buffer_size as usize);
+                // Hosts restore plugin state (params and persisted fields)
+                // before re-running initialize after loading it, so a saved
+                // project gets its kit back here.
+                self.restore_persisted_kit();
                 true
             }
 
@@ -874,6 +929,67 @@ mod tests {
         let guard = plugin.core.kit_info.lock().unwrap();
         let info = guard.as_ref().expect("kit recorded by loader thread");
         assert_eq!(info.name, "Async Load Kit");
+    }
+
+    /// The loaded kit path is persisted in the plugin state (hosts save it
+    /// with the project), and a fresh instance — as after a host project
+    /// reload — restores the kit before any playback.
+    #[test]
+    fn persisted_kit_is_restored_after_state_load() {
+        use nice_plug::params::Params;
+
+        let dir_path = std::env::temp_dir().join("dizmo-persist-kit");
+        let dir = write_test_kit(&dir_path);
+
+        let mut plugin = DizmoPlugin::default();
+        plugin.load_kit(dir.join("drumkit.xml")).unwrap();
+
+        // The path lives in the persisted fields, exactly the part of the
+        // plugin state the wrapper serializes on host save.
+        let fields = plugin.params.serialize_fields();
+        let restored = DizmoParams::default();
+        restored.deserialize_fields(&fields);
+        assert_eq!(
+            restored.kit_file.0.lock().unwrap().as_deref(),
+            Some(dir.join("drumkit.xml").as_path()),
+            "the kit path must round-trip through the persisted fields"
+        );
+
+        // A fresh plugin gets the saved fields applied and `initialize`
+        // re-runs (the wrapper does both when the host loads a project): the
+        // engine must come back with the kit. Without the async machinery
+        // (plain unit tests) the restore falls back to a synchronous load.
+        let mut fresh = DizmoPlugin::default();
+        *fresh.params.kit_file.0.lock().unwrap() = Some(dir.join("drumkit.xml"));
+        assert!(fresh.core.engine.is_none());
+        fresh.restore_persisted_kit();
+        let engine = fresh.core.engine.as_ref().expect("kit restored");
+        assert_eq!(engine.kit_name(), "Async Load Kit");
+        assert_eq!(engine.kit_channels(), 1);
+
+        // With the async machinery installed (as in a real host, where
+        // `task_executor` runs before `initialize`), the restore dispatches
+        // the load to the loader thread instead of blocking: the engine
+        // arrives on the audio-thread channel and is picked up at the next
+        // process block.
+        let mut fresh = DizmoPlugin::default();
+        *fresh.params.kit_file.0.lock().unwrap() = Some(dir.join("drumkit.xml"));
+        let _executor = fresh.task_executor();
+        fresh.restore_persisted_kit();
+        // Like `process`: poll the audio-thread channel until the loader
+        // thread hands the engine over.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while fresh.core.engine.is_none() && std::time::Instant::now() < deadline {
+            fresh.core.check_engine_updates();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let engine = fresh
+            .core
+            .engine
+            .as_ref()
+            .expect("kit swapped in by process");
+        assert_eq!(engine.kit_name(), "Async Load Kit");
+        assert_eq!(engine.kit_channels(), 1);
     }
 
     /// A reopened editor must be seeded with the current kit. The window is
