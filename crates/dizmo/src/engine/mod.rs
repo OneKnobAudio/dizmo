@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::kit::{DizmoKit, KitError, MidiMap};
 use crate::params::NUM_CHANNELS;
-use crate::samples::{SampleBank, SampleError, load_samples_with_progress};
+use crate::samples::{SampleBank, SampleError, load_samples_with_warnings};
 
 /// Maximum number of simultaneously playing voices; the oldest is faded out
 /// first when exceeded.
@@ -682,14 +682,15 @@ pub fn load_engine_with_progress(
     let midimap = kit
         .load_midimap_candidates(&kit.default_midimap_candidates())?
         .unwrap_or_default();
-    let bank = Arc::new(load_samples_with_progress(
+    let mut warnings = Vec::new();
+    let bank = Arc::new(load_samples_with_warnings(
         &kit,
         target_sample_rate,
         progress,
+        &mut warnings,
     )?);
     let engine = Engine::new(kit, bank, midimap);
 
-    let mut warnings = Vec::new();
     let declared = engine.channel_names().len();
     if declared > NUM_CHANNELS {
         warnings.push(format!(

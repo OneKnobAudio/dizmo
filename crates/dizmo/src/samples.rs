@@ -5,6 +5,8 @@
 //! `load_samples_with_progress`); the resulting [`SampleBank`] is read-only
 //! and shared with the engine. Files are decoded in parallel, and only the
 //! channels that samples actually reference are decoded and resampled.
+//! Out-of-range `file_channel` references are clamped to the file's last
+//! channel with a non-fatal warning (DrumGizmo's behavior).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,9 +54,14 @@ impl SampleBank {
 
     /// The mono buffer for one `AudioFile` reference, resolved against
     /// `base_dir` (the directory of the instrument XML that declared it).
+    /// A reference to a channel beyond the file's count falls back to the
+    /// file's last decoded channel (the loader clamps such references).
     pub fn audio_file(&self, base_dir: &Path, audio: &AudioFile) -> Option<&Arc<[f32]>> {
         let file = self.files.get(&base_dir.join(&audio.file))?;
-        file.channels.get(audio.file_channel)?.as_ref()
+        file.channels
+            .get(audio.file_channel)
+            .and_then(Option::as_ref)
+            .or_else(|| file.channels.iter().rev().find_map(Option::as_ref))
     }
 
     /// The number of unique decoded files.
@@ -76,6 +83,9 @@ struct SampleTask {
     channels: Vec<usize>,
 }
 
+/// A single file's decode outcome, with its non-fatal warnings.
+type DecodeResult = Result<(DecodedFile, Vec<String>), SampleError>;
+
 /// Like [`load_samples`], but reports decoding progress via `progress(loaded, total)`.
 ///
 /// Files are decoded on a worker pool sized to the machine. Errors are still
@@ -85,6 +95,18 @@ pub fn load_samples_with_progress(
     kit: &DizmoKit,
     target_sample_rate: Option<u32>,
     progress: &mut dyn FnMut(usize, usize),
+) -> Result<SampleBank, SampleError> {
+    load_samples_with_warnings(kit, target_sample_rate, progress, &mut Vec::new())
+}
+
+/// Like [`load_samples_with_progress`], but also reports non-fatal loading
+/// warnings (e.g. an out-of-range `filechannel` clamped to the file's last
+/// channel), appended in kit declaration order.
+pub fn load_samples_with_warnings(
+    kit: &DizmoKit,
+    target_sample_rate: Option<u32>,
+    progress: &mut dyn FnMut(usize, usize),
+    warnings: &mut Vec<String>,
 ) -> Result<SampleBank, SampleError> {
     let tasks = unique_files(kit);
     if tasks.is_empty() {
@@ -119,8 +141,7 @@ pub fn load_samples_with_progress(
 
         // Results arrive out of order; collect them all and reduce in load
         // order so the first failing file decides the error.
-        let mut results: Vec<Option<Result<DecodedFile, SampleError>>> =
-            (0..tasks.len()).map(|_| None).collect();
+        let mut results: Vec<Option<DecodeResult>> = (0..tasks.len()).map(|_| None).collect();
         let mut received = 0;
         let mut loaded = 0;
         while received < tasks.len() {
@@ -139,7 +160,10 @@ pub fn load_samples_with_progress(
         bank = Some(build_bank(&tasks, results));
     });
 
-    bank.expect("sample loading always completes and assigns the bank")
+    let (bank, mut file_warnings) =
+        bank.expect("sample loading always completes and assigns the bank")?;
+    warnings.append(&mut file_warnings);
+    Ok(bank)
 }
 
 /// The unique sample files referenced by `kit`, in load order, each with the
@@ -168,14 +192,16 @@ fn unique_files(kit: &DizmoKit) -> Vec<SampleTask> {
 }
 
 /// Reduces parallel decode results into a bank in load order, returning the
-/// first error and inserting every successfully decoded file.
+/// first error and inserting every successfully decoded file. Non-fatal
+/// per-file warnings are collected in load order.
 fn build_bank(
     tasks: &[SampleTask],
-    results: Vec<Option<Result<DecodedFile, SampleError>>>,
-) -> Result<SampleBank, SampleError> {
+    results: Vec<Option<DecodeResult>>,
+) -> Result<(SampleBank, Vec<String>), SampleError> {
     let mut files = HashMap::with_capacity(tasks.len());
+    let mut warnings = Vec::new();
     for (task, result) in tasks.iter().zip(results) {
-        let decoded = match result {
+        let (decoded, file_warnings) = match result {
             Some(Ok(decoded)) => decoded,
             Some(Err(error)) => return Err(error),
             None => {
@@ -184,18 +210,21 @@ fn build_bank(
                 ));
             }
         };
+        warnings.extend(file_warnings);
         files.insert(task.path.clone(), Arc::new(decoded));
     }
-    Ok(SampleBank { files })
+    Ok((SampleBank { files }, warnings))
 }
 
 /// Decodes the channels of `task.path` that samples reference, resampling them
-/// to `target_sample_rate` when it differs from the file's own rate.
+/// to `target_sample_rate` when it differs from the file's own rate. Channels
+/// beyond the file's count are clamped to its last channel and reported as
+/// non-fatal warnings (DrumGizmo's behavior).
 fn decode_file(
     task: &SampleTask,
     target_sample_rate: Option<u32>,
     cache: &mut ResamplerCache,
-) -> Result<DecodedFile, SampleError> {
+) -> Result<(DecodedFile, Vec<String>), SampleError> {
     let path = &task.path;
     let mut reader = hound::WavReader::open(path).map_err(|error| match error {
         hound::Error::IoError(source) => SampleError::Io {
@@ -211,20 +240,30 @@ fn decode_file(
     let num_channels = spec.channels as usize;
     let frame_count = reader.duration() as usize;
 
-    for &channel in &task.channels {
-        if channel >= num_channels {
-            return Err(SampleError::ChannelOutOfRange {
-                sample: task.sample.clone(),
-                path: path.to_path_buf(),
-                channel,
-                num_channels,
-            });
-        }
-    }
-
+    let mut warnings = Vec::new();
     let mut wanted = vec![false; num_channels];
     for &channel in &task.channels {
-        wanted[channel] = true;
+        if channel < num_channels {
+            wanted[channel] = true;
+        } else {
+            // Clamp to the file's last channel, warning like DrumGizmo's
+            // audiofile.cc. The XML is 1-based, so the messages speak in
+            // 1-based channel numbers.
+            let clamped = num_channels
+                .checked_sub(1)
+                .ok_or_else(|| SampleError::Decode {
+                    path: path.to_path_buf(),
+                    source: hound::Error::FormatError("the file has no audio channels"),
+                })?;
+            warnings.push(format!(
+                "sample '{}' references channel {} of '{}' but the file has only {num_channels} channel(s); using channel {} instead",
+                task.sample,
+                channel + 1,
+                path.display(),
+                clamped + 1,
+            ));
+            wanted[clamped] = true;
+        }
     }
 
     // Preallocate only the referenced channels from the frame count, avoiding
@@ -284,14 +323,17 @@ fn decode_file(
         _ => spec.sample_rate,
     };
 
-    Ok(DecodedFile {
-        sample_rate,
-        channels: channels
-            .into_iter()
-            .zip(wanted)
-            .map(|(buffer, keep)| if keep { Some(buffer.into()) } else { None })
-            .collect(),
-    })
+    Ok((
+        DecodedFile {
+            sample_rate,
+            channels: channels
+                .into_iter()
+                .zip(wanted)
+                .map(|(buffer, keep)| if keep { Some(buffer.into()) } else { None })
+                .collect(),
+        },
+        warnings,
+    ))
 }
 
 /// Per-worker-thread resamplers, reused across the files that worker decodes.
@@ -367,16 +409,6 @@ pub enum SampleError {
 
     #[error("failed to decode WAV '{path}': {source}")]
     Decode { path: PathBuf, source: hound::Error },
-
-    #[error(
-        "sample '{sample}' references channel {channel} but '{path}' only has {num_channels} channel(s)"
-    )]
-    ChannelOutOfRange {
-        sample: String,
-        path: PathBuf,
-        channel: usize,
-        num_channels: usize,
-    },
 
     #[error("internal error while loading samples: {0}")]
     Internal(String),

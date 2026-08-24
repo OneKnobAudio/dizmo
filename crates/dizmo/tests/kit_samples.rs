@@ -1,5 +1,5 @@
 use dizmo::kit::DizmoKit;
-use dizmo::samples::{SampleError, load_samples_with_progress};
+use dizmo::samples::{SampleError, load_samples_with_progress, load_samples_with_warnings};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -156,7 +156,7 @@ fn errors_on_invalid_wav() {
 }
 
 #[test]
-fn errors_on_channel_out_of_range() {
+fn clamps_out_of_range_filechannel_and_warns() {
     let dir = write_kit(
         "channel-range",
         r#"<instrument version="2.0" name="Kick">
@@ -170,20 +170,57 @@ fn errors_on_channel_out_of_range() {
     );
 
     let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
-    let error = load_samples_with_progress(&kit, None, &mut |_, _| {}).unwrap_err();
-    match error {
-        SampleError::ChannelOutOfRange {
-            sample,
-            channel,
-            num_channels,
-            ..
-        } => {
-            assert_eq!(sample, "Kick-1");
-            assert_eq!(channel, 4);
-            assert_eq!(num_channels, 1);
-        }
-        other => panic!("expected ChannelOutOfRange, got {other:?}"),
-    }
+    let mut warnings = Vec::new();
+    let bank = load_samples_with_warnings(&kit, None, &mut |_, _| {}, &mut warnings).unwrap();
+
+    // The load succeeds and reports the clamp as a non-fatal warning naming
+    // the sample and the file.
+    assert_eq!(
+        warnings.len(),
+        1,
+        "one warning per clamped file: {warnings:?}"
+    );
+    assert!(warnings[0].contains("Kick-1"), "warning: {}", warnings[0]);
+    assert!(warnings[0].contains("kick.wav"), "warning: {}", warnings[0]);
+
+    // The row still holds the out-of-range channel, but the bank resolves it
+    // to the file's last (only) channel.
+    let kick = &kit.instruments[0];
+    let data = bank
+        .audio_file(&kick.base_dir, &kick.samples[0].audio_files[0])
+        .expect("clamped reference resolves to the last channel");
+    assert!(approx(1.0 / 32768.0, data[0]));
+    assert!(approx(2.0 / 32768.0, data[1]));
+    assert!(approx(3.0 / 32768.0, data[2]));
+}
+
+#[test]
+fn clamps_stereo_filechannel_to_the_right_channel() {
+    let dir = write_kit(
+        "stereo-channel-range",
+        r#"<instrument version="2.0" name="Kick">
+  <samples>
+    <sample name="Kick-1" power="0.1">
+      <audiofile channel="Kick" file="kick.wav" filechannel="3"/>
+    </sample>
+  </samples>
+</instrument>"#,
+        // Two interleaved stereo frames: L, R, L, R.
+        &[("kick.wav", 2, &[1000, 2000, 3000, 4000])],
+    );
+
+    let kit = DizmoKit::load(dir.join("drumkit.xml")).unwrap();
+    let mut warnings = Vec::new();
+    let bank = load_samples_with_warnings(&kit, None, &mut |_, _| {}, &mut warnings).unwrap();
+    assert_eq!(warnings.len(), 1);
+
+    // filechannel 3 (1-based) on a 2-channel file clamps to the right channel.
+    let kick = &kit.instruments[0];
+    let data = bank
+        .audio_file(&kick.base_dir, &kick.samples[0].audio_files[0])
+        .expect("clamped reference resolves to the last channel");
+    assert!(approx(2000.0 / 32768.0, data[0]));
+    assert!(approx(4000.0 / 32768.0, data[1]));
 }
 
 #[test]
