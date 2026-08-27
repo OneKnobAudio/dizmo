@@ -403,43 +403,49 @@ pub fn sample_panel<'a>(
             Some(af) => {
                 let resolved = inst.instrument.base_dir.join(&af.file);
                 let count = file_channel_count(&resolved, file_channels);
-                let left = button(text("L").size(11))
-                    .style(pill(af.file_channel == 0))
-                    .on_press(Message::SampleSetChannelSide(
-                        instrument,
-                        sample_idx,
-                        name.clone(),
-                        false,
-                    ));
-                // The R side is only offered for files with at least two
-                // channels (a mono file plays its only channel either way).
-                let right = if count >= 2 {
-                    button(text("R").size(11))
-                        .style(pill(af.file_channel == 1))
-                        .on_press(Message::SampleSetChannelSide(
+                // The L/R toggle is only offered for files with at least two
+                // channels; a mono file just plays its only channel, so show
+                // a plain "mono" label instead.
+                let mut row = row![
+                    text(&af.channel)
+                        .size(11)
+                        .color(TEXT)
+                        .width(Length::Fixed(110.0)),
+                    button(text(&af.file).size(11).color(TEXT_DIM))
+                        .on_press(Message::SamplePickChannelFile(
                             instrument,
                             sample_idx,
                             name.clone(),
-                            true,
                         ))
+                        .width(Length::Fill),
+                ];
+                if count >= 2 {
+                    row = row
+                        .push(
+                            button(text("L").size(11))
+                                .style(pill(af.file_channel == 0))
+                                .on_press(Message::SampleSetChannelSide(
+                                    instrument,
+                                    sample_idx,
+                                    name.clone(),
+                                    false,
+                                )),
+                        )
+                        .push(
+                            button(text("R").size(11))
+                                .style(pill(af.file_channel == 1))
+                                .on_press(Message::SampleSetChannelSide(
+                                    instrument,
+                                    sample_idx,
+                                    name.clone(),
+                                    true,
+                                )),
+                        );
                 } else {
-                    button(text("R").size(11)).style(pill(false))
-                };
-                audio_files = audio_files.push(
-                    row![
-                        text(&af.channel)
-                            .size(11)
-                            .color(TEXT)
-                            .width(Length::Fixed(110.0)),
-                        button(text(&af.file).size(11).color(TEXT_DIM))
-                            .on_press(Message::SamplePickChannelFile(
-                                instrument,
-                                sample_idx,
-                                name.clone(),
-                            ))
-                            .width(Length::Fill),
-                        left,
-                        right,
+                    row = row.push(text("mono").size(11).color(TEXT_DIM));
+                }
+                row = row
+                    .push(
                         button(text("×"))
                             .on_press(Message::SampleRemoveChannelRow(
                                 instrument,
@@ -447,10 +453,10 @@ pub fn sample_panel<'a>(
                                 name.clone(),
                             ))
                             .style(danger_button_style),
-                    ]
+                    )
                     .spacing(6)
-                    .align_y(iced::Alignment::Center),
-                );
+                    .align_y(iced::Alignment::Center);
+                audio_files = audio_files.push(row);
             }
             None => {
                 audio_files = audio_files.push(
