@@ -425,6 +425,90 @@ impl EditorKit {
         }
     }
 
+    /// Sets (or replaces) the audio file feeding `channel` of `sample` on
+    /// `instrument`, resetting its side to left (file channel 0). Returns the
+    /// file's channel count so the UI knows whether the L/R toggle applies.
+    pub fn set_sample_channel_file(
+        &mut self,
+        instrument: usize,
+        sample: usize,
+        channel: &str,
+        path: &Path,
+    ) -> Result<u16, String> {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return Err("Instrument not found.".to_string());
+        };
+        let Some(sample_ref) = inst.instrument.samples.get_mut(sample) else {
+            return Err("Sample not found.".to_string());
+        };
+        let reader = hound::WavReader::open(path)
+            .map_err(|err| format!("'{}' is not a readable WAV file: {err}", path.display()))?;
+        let file_channels = reader.spec().channels.max(1);
+        let file = path.to_string_lossy().into_owned();
+        match sample_ref
+            .audio_files
+            .iter_mut()
+            .find(|audio| audio.channel == channel)
+        {
+            Some(audio) => {
+                audio.file = file;
+                audio.file_channel = 0;
+            }
+            None => sample_ref.audio_files.push(AudioFile {
+                channel: channel.to_string(),
+                file,
+                file_channel: 0,
+            }),
+        }
+        self.dirty = true;
+        Ok(file_channels)
+    }
+
+    /// Removes the audio row feeding `channel` of `sample`.
+    pub fn remove_sample_channel(&mut self, instrument: usize, sample: usize, channel: &str) {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return;
+        };
+        let Some(sample_ref) = inst.instrument.samples.get_mut(sample) else {
+            return;
+        };
+        if let Some(position) = sample_ref
+            .audio_files
+            .iter()
+            .position(|audio| audio.channel == channel)
+        {
+            sample_ref.audio_files.remove(position);
+            self.dirty = true;
+        }
+    }
+
+    /// Sets which side (0 = left, 1 = right) the audio row feeding `channel`
+    /// of `sample` uses. Only meaningful for files with at least two
+    /// channels; the plugin clamps out-of-range sides on load.
+    pub fn set_sample_channel_side(
+        &mut self,
+        instrument: usize,
+        sample: usize,
+        channel: &str,
+        file_channel: usize,
+    ) {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return;
+        };
+        let Some(sample_ref) = inst.instrument.samples.get_mut(sample) else {
+            return;
+        };
+        if let Some(audio) = sample_ref
+            .audio_files
+            .iter_mut()
+            .find(|audio| audio.channel == channel)
+            && audio.file_channel != file_channel
+        {
+            audio.file_channel = file_channel;
+            self.dirty = true;
+        }
+    }
+
     /// Sets the normalized mark for the whole instrument: every sample gets
     /// `normalized`, so the instrument's samples stay uniform. Legacy kits
     /// with mixed per-sample marks keep them until this is used.

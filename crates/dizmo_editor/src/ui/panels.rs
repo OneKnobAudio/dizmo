@@ -1,5 +1,9 @@
 //! Context panels: Kit, Instrument, Sample, MIDI map, and the welcome screen.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use iced::widget::{
     Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
 };
@@ -381,29 +385,98 @@ pub fn sample_panel<'a>(
     sample_idx: usize,
     previewing: bool,
     preview_volume: f32,
+    file_channels: &'a RefCell<HashMap<PathBuf, u16>>,
 ) -> Element<'a, Message> {
-    let sample = &kit.instruments[instrument].instrument.samples[sample_idx];
+    let inst = &kit.instruments[instrument];
+    let sample = &inst.instrument.samples[sample_idx];
 
+    // One row per instrument channel: the file feeding it, an L/R toggle for
+    // stereo files, and remove. Channels without a row offer a file picker.
     let mut audio_files = column![].spacing(2);
-    for af in &sample.audio_files {
-        audio_files = audio_files.push(
-            row![
-                text(&af.channel)
-                    .size(11)
-                    .color(TEXT)
-                    .width(Length::Fixed(120.0)),
-                text(&af.file).size(11).color(TEXT_DIM),
-                text(format!("file channel {}", af.file_channel + 1))
-                    .size(11)
-                    .color(TEXT_DIM),
-            ]
-            .spacing(8),
-        );
+    for channel in &inst.instrument.channels {
+        let name = channel.name.clone();
+        let existing = sample
+            .audio_files
+            .iter()
+            .find(|audio| audio.channel == channel.name);
+        match existing {
+            Some(af) => {
+                let resolved = inst.instrument.base_dir.join(&af.file);
+                let count = file_channel_count(&resolved, file_channels);
+                let left = button(text("L").size(11))
+                    .style(pill(af.file_channel == 0))
+                    .on_press(Message::SampleSetChannelSide(
+                        instrument,
+                        sample_idx,
+                        name.clone(),
+                        false,
+                    ));
+                // The R side is only offered for files with at least two
+                // channels (a mono file plays its only channel either way).
+                let right = if count >= 2 {
+                    button(text("R").size(11))
+                        .style(pill(af.file_channel == 1))
+                        .on_press(Message::SampleSetChannelSide(
+                            instrument,
+                            sample_idx,
+                            name.clone(),
+                            true,
+                        ))
+                } else {
+                    button(text("R").size(11)).style(pill(false))
+                };
+                audio_files = audio_files.push(
+                    row![
+                        text(&af.channel)
+                            .size(11)
+                            .color(TEXT)
+                            .width(Length::Fixed(110.0)),
+                        button(text(&af.file).size(11).color(TEXT_DIM))
+                            .on_press(Message::SamplePickChannelFile(
+                                instrument,
+                                sample_idx,
+                                name.clone(),
+                            ))
+                            .width(Length::Fill),
+                        left,
+                        right,
+                        button(text("×"))
+                            .on_press(Message::SampleRemoveChannelRow(
+                                instrument,
+                                sample_idx,
+                                name.clone(),
+                            ))
+                            .style(danger_button_style),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center),
+                );
+            }
+            None => {
+                audio_files = audio_files.push(
+                    row![
+                        text(&channel.name)
+                            .size(11)
+                            .color(TEXT)
+                            .width(Length::Fixed(110.0)),
+                        button(text("+ pick file").size(11))
+                            .on_press(Message::SamplePickChannelFile(
+                                instrument,
+                                sample_idx,
+                                name.clone(),
+                            ))
+                            .style(pill(false)),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center),
+                );
+            }
+        }
     }
-    if sample.audio_files.is_empty() {
+    if inst.instrument.channels.is_empty() {
         audio_files = audio_files.push(
             text(
-                "No audio files yet — assign channels to this instrument first (workflow step 4).",
+                "No channels assigned — assign channels to this instrument first (workflow step 4).",
             )
             .size(11)
             .color(TEXT_DIM),
@@ -529,6 +602,19 @@ fn field<'a>(
     ]
     .spacing(4)
     .into()
+}
+
+/// The channel count of a WAV, cached per path so the panel does not re-read
+/// headers on every frame. Unreadable files report one channel.
+fn file_channel_count(path: &Path, cache: &RefCell<HashMap<PathBuf, u16>>) -> u16 {
+    if let Some(count) = cache.borrow().get(path) {
+        return *count;
+    }
+    let count = hound::WavReader::open(path)
+        .map(|reader| reader.spec().channels.max(1))
+        .unwrap_or(1);
+    cache.borrow_mut().insert(path.to_path_buf(), count);
+    count
 }
 
 pub(crate) fn midi_note_name(note: u8) -> String {

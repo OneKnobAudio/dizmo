@@ -6,6 +6,8 @@ pub mod preview;
 pub mod sidebar;
 pub mod theme;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
@@ -103,6 +105,10 @@ pub enum Message {
     RenameSample(usize, usize, String),
     SamplePower(usize, usize, f32),
     InstrumentNormalized(usize, bool),
+    SamplePickChannelFile(usize, usize, String),
+    SampleChannelFilePicked(usize, usize, String, Option<PathBuf>),
+    SampleSetChannelSide(usize, usize, String, bool),
+    SampleRemoveChannelRow(usize, usize, String),
     Preview(usize, usize),
     StopPreview,
     PreviewVolume(f32),
@@ -134,6 +140,9 @@ pub struct App {
     preview_token: u64,
     previewing: Option<(usize, usize)>,
     preview_volume: f32,
+    /// Per-file channel counts, probed once when a file is picked or first
+    /// shown; lets the sample panel know whether the L/R toggle applies.
+    file_channels: RefCell<HashMap<PathBuf, u16>>,
 }
 
 impl App {
@@ -149,6 +158,7 @@ impl App {
             preview_token: 0,
             previewing: None,
             preview_volume: 1.0,
+            file_channels: RefCell::new(HashMap::new()),
         }
     }
 
@@ -608,6 +618,48 @@ impl App {
                     kit.set_instrument_normalized(i, checked);
                 }
             }
+            Message::SamplePickChannelFile(instrument, sample, channel) => {
+                return Task::perform(
+                    AsyncFileDialog::new()
+                        .add_filter("Audio File", &["wav"])
+                        .pick_file(),
+                    move |picked| {
+                        Message::SampleChannelFilePicked(
+                            instrument,
+                            sample,
+                            channel,
+                            picked.map(|handle| handle.path().to_path_buf()),
+                        )
+                    },
+                );
+            }
+            Message::SampleChannelFilePicked(instrument, sample, channel, Some(path)) => {
+                if let Some(kit) = &mut self.kit {
+                    match kit.set_sample_channel_file(instrument, sample, &channel, &path) {
+                        Ok(file_channels) => {
+                            self.file_channels
+                                .borrow_mut()
+                                .insert(path.clone(), file_channels);
+                            self.status = Some(format!(
+                                "Channel '{channel}' now uses '{}'.",
+                                path.display()
+                            ));
+                        }
+                        Err(error) => self.status = Some(error),
+                    }
+                }
+            }
+            Message::SampleChannelFilePicked(_, _, _, None) => {}
+            Message::SampleSetChannelSide(instrument, sample, channel, right) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.set_sample_channel_side(instrument, sample, &channel, usize::from(right));
+                }
+            }
+            Message::SampleRemoveChannelRow(instrument, sample, channel) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.remove_sample_channel(instrument, sample, &channel);
+                }
+            }
             Message::Preview(instrument, sample) => {
                 let Some(kit) = &self.kit else {
                     return Task::none();
@@ -1027,7 +1079,7 @@ impl App {
                 if i < kit.instruments.len() && s < kit.instruments[i].instrument.samples.len() =>
             {
                 let playing = self.previewing == Some((i, s));
-                panels::sample_panel(kit, i, s, playing, self.preview_volume)
+                panels::sample_panel(kit, i, s, playing, self.preview_volume, &self.file_channels)
             }
             Selection::Midimap => panels::midimap_panel(kit, &self.midimap_note),
             _ => panels::kit_panel(kit, &self.samplerate_text),

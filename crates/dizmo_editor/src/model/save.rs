@@ -1137,6 +1137,115 @@ mod tests {
     }
 
     #[test]
+    fn per_channel_file_assignment_and_sides_round_trip() {
+        let root =
+            std::env::temp_dir().join(format!("dizmo_editor_channel_files_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit(
+            "Stereo Test",
+            44100.0,
+            &["OverheadL".into(), "OverheadR".into()],
+        );
+        let inst = kit.add_instrument("Overhead");
+        kit.toggle_channel_assignment(inst, "OverheadL");
+        kit.toggle_channel_assignment(inst, "OverheadR");
+
+        // Import one mono file: both channels get a row (fast path).
+        let mono = root
+            .parent()
+            .unwrap()
+            .join(format!("mono_{}.wav", std::process::id()));
+        write_wav_channels(&mono, 1);
+        let sample = kit.import_sample(inst, &mono, false).unwrap();
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[sample]
+                .audio_files
+                .len(),
+            2
+        );
+
+        // Task 1: point each channel at its own file (different files per side).
+        let l = root
+            .parent()
+            .unwrap()
+            .join(format!("l_{}.wav", std::process::id()));
+        let r = root
+            .parent()
+            .unwrap()
+            .join(format!("r_{}.wav", std::process::id()));
+        write_wav_channels(&l, 1);
+        write_wav_channels(&r, 1);
+        assert_eq!(
+            kit.set_sample_channel_file(inst, sample, "OverheadL", &l)
+                .unwrap(),
+            1,
+            "returns the file's channel count"
+        );
+        assert_eq!(
+            kit.set_sample_channel_file(inst, sample, "OverheadR", &r)
+                .unwrap(),
+            1
+        );
+
+        // Task 2: set the right side's channel (side index 1, XML filechannel 2).
+        kit.set_sample_channel_side(inst, sample, "OverheadR", 1);
+        let rows = &kit.instruments[inst].instrument.samples[sample].audio_files;
+        assert_eq!(
+            rows.iter()
+                .find(|a| a.channel == "OverheadL")
+                .unwrap()
+                .file_channel,
+            0
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|a| a.channel == "OverheadR")
+                .unwrap()
+                .file_channel,
+            1
+        );
+
+        // Removing a row and re-adding it resets the side to left.
+        kit.remove_sample_channel(inst, sample, "OverheadL");
+        assert!(
+            !kit.instruments[inst].instrument.samples[sample]
+                .audio_files
+                .iter()
+                .any(|a| a.channel == "OverheadL")
+        );
+        kit.set_sample_channel_file(inst, sample, "OverheadL", &l)
+            .unwrap();
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[sample]
+                .audio_files
+                .iter()
+                .find(|a| a.channel == "OverheadL")
+                .unwrap()
+                .file_channel,
+            0
+        );
+
+        // Save + reload: rows and sides survive (relative paths under samples/).
+        kit.root_dir = Some(root.clone());
+        save(&mut kit).unwrap();
+        let loaded = DizmoKit::load(root.join("Stereo Test.xml")).unwrap();
+        let rows = &loaded.instruments[0].samples[0].audio_files;
+        let l_row = rows.iter().find(|a| a.channel == "OverheadL").unwrap();
+        let r_row = rows.iter().find(|a| a.channel == "OverheadR").unwrap();
+        assert!(
+            l_row
+                .file
+                .ends_with(&format!("l_{}.wav", std::process::id()))
+        );
+        assert_eq!(l_row.file_channel, 0);
+        assert_eq!(r_row.file_channel, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn save_uses_kit_name_as_filename_and_resolves_variation_midimap() {
         let root =
             std::env::temp_dir().join(format!("dizmo_editor_variation_{}", std::process::id()));
