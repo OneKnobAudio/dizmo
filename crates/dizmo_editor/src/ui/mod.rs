@@ -900,6 +900,14 @@ impl App {
             .get(instrument)
             .map(|inst| inst.reference.name.clone())
             .unwrap_or_default();
+        // Collect the model's non-fatal warnings (deduplicated, e.g. several
+        // stereo files hitting the same under-channelled instrument).
+        let mut warnings = Vec::new();
+        for warning in kit.take_warnings() {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
         let mut status = match imported {
             0 => String::new(),
             1 if resampled == 1 => {
@@ -918,6 +926,14 @@ impl App {
                 status.push_str(" Failed: ");
             }
             status.push_str(&errors.join("; "));
+        }
+        if !warnings.is_empty() {
+            if status.is_empty() {
+                status.push_str("Warning: ");
+            } else {
+                status.push_str(" Warning: ");
+            }
+            status.push_str(&warnings.join(" "));
         }
         if !status.is_empty() {
             self.status = Some(status);

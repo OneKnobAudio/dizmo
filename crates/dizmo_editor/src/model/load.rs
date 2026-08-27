@@ -72,6 +72,7 @@ pub fn load(file_path: &Path) -> Result<(EditorKit, Option<String>), KitError> {
             instruments,
             midimap,
             dirty: false,
+            warnings: Vec::new(),
         },
         warning,
     ))

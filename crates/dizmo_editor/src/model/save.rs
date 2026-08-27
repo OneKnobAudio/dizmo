@@ -814,11 +814,12 @@ mod tests {
         let expected_name = wav.file_stem().unwrap().to_string_lossy();
         assert_eq!(sample.name, expected_name);
         // One row per instrument channel, all pointing at the same WAV, with
-        // filechannel clamped to the WAV's channel count (2 channels here).
+        // filechannel cycling through the file's channels: stereo (2 ch)
+        // alternates L, R, L across the three channels.
         assert_eq!(sample.audio_files.len(), 3);
         for (i, audio) in sample.audio_files.iter().enumerate() {
             assert_eq!(audio.channel, kit.drumkit.channels[i].name);
-            assert_eq!(audio.file_channel, i.min(1));
+            assert_eq!(audio.file_channel, i % 2);
             assert!(Path::new(&audio.file).is_absolute());
         }
         assert!(
@@ -891,6 +892,127 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn import_sample_mono_file_feeds_channel_zero_to_all_channels() {
+        let root = std::env::temp_dir().join(format!("dizmo_editor_mono_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit(
+            "Mono Import Test",
+            48000.0,
+            &["Kick".into(), "AmbL".into(), "AmbR".into()],
+        );
+        let inst = kit.add_instrument("Kick");
+        kit.toggle_channel_assignment(inst, "Kick");
+        kit.toggle_channel_assignment(inst, "AmbL");
+        kit.toggle_channel_assignment(inst, "AmbR");
+
+        let mono = root.join("mono.wav");
+        write_wav_channels(&mono, 1);
+
+        let index = kit.import_sample(inst, &mono, false).unwrap();
+        let sample = &kit.instruments[inst].instrument.samples[index];
+        assert_eq!(sample.audio_files.len(), 3);
+        assert!(
+            sample.audio_files.iter().all(|a| a.file_channel == 0),
+            "a mono sample must reference file channel 0 on every channel"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn import_warns_when_a_stereo_sample_has_fewer_than_two_main_channels() {
+        let root = std::env::temp_dir().join(format!("dizmo_editor_warn_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit("Warn Test", 48000.0, &["Kick".into(), "Room".into()]);
+        let inst = kit.add_instrument("Kick");
+        kit.toggle_channel_assignment(inst, "Kick");
+        kit.toggle_channel_assignment(inst, "Room");
+        // Only "Kick" is main: a stereo sample can only play its left side.
+        kit.set_channel_main(inst, "Kick", true);
+
+        let stereo = root.join("stereo.wav");
+        write_wav_channels(&stereo, 2);
+        kit.import_sample(inst, &stereo, false).unwrap();
+
+        let warnings = kit.take_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("not enough channels"),
+            "unexpected warning: {}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].contains("defaulting to the left channel"),
+            "unexpected warning: {}",
+            warnings[0]
+        );
+
+        // Mono files never warn, and neither do stereo files once the
+        // instrument has two main channels.
+        let mono = root.join("mono.wav");
+        write_wav_channels(&mono, 1);
+        kit.import_sample(inst, &mono, false).unwrap();
+        assert!(kit.take_warnings().is_empty());
+
+        kit.set_channel_main(inst, "Room", true);
+        kit.import_sample(inst, &stereo, false).unwrap();
+        assert!(kit.take_warnings().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assigning_a_channel_propagates_rows_to_existing_samples() {
+        let root = std::env::temp_dir().join(format!("dizmo_editor_prop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit(
+            "Propagate Test",
+            48000.0,
+            &["Kick".into(), "Snare".into(), "Room".into()],
+        );
+        let inst = kit.add_instrument("Kit");
+        kit.toggle_channel_assignment(inst, "Kick");
+        kit.toggle_channel_assignment(inst, "Snare");
+
+        let stereo = root.join("stereo.wav");
+        write_wav_channels(&stereo, 2);
+        let stereo_sample = kit.import_sample(inst, &stereo, false).unwrap();
+        let mono = root.join("mono.wav");
+        write_wav_channels(&mono, 1);
+        let mono_sample = kit.import_sample(inst, &mono, false).unwrap();
+
+        // Assign a third channel: every existing sample gains a row whose
+        // side follows the cycling rule over its primary file.
+        kit.toggle_channel_assignment(inst, "Room");
+
+        let stereo_rows = &kit.instruments[inst].instrument.samples[stereo_sample].audio_files;
+        assert_eq!(stereo_rows.len(), 3);
+        let room = stereo_rows.iter().find(|a| a.channel == "Room").unwrap();
+        assert_eq!(room.file, stereo_rows[0].file);
+        assert_eq!(room.file_channel, 2 % 2, "stereo file cycles back to L");
+
+        let mono_rows = &kit.instruments[inst].instrument.samples[mono_sample].audio_files;
+        assert_eq!(mono_rows.len(), 3);
+        let room = mono_rows.iter().find(|a| a.channel == "Room").unwrap();
+        assert_eq!(room.file_channel, 0, "mono file feeds its only channel");
+
+        // Unassigning removes the propagated rows again.
+        kit.toggle_channel_assignment(inst, "Room");
+        for sample in &kit.instruments[inst].instrument.samples {
+            assert_eq!(sample.audio_files.len(), 2);
+            assert!(sample.audio_files.iter().all(|a| a.channel != "Room"));
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

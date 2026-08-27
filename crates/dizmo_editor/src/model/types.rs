@@ -27,6 +27,10 @@ pub struct EditorKit {
     pub instruments: Vec<EditorInstrument>,
     pub midimap: MidiMap,
     pub dirty: bool,
+    /// Non-fatal warnings collected by the latest operations (e.g. a stereo
+    /// sample imported into an instrument with fewer than two main channels).
+    /// The UI drains them with [`EditorKit::take_warnings`].
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +74,7 @@ impl EditorKit {
             instruments: Vec::new(),
             midimap: MidiMap::default(),
             dirty: true,
+            warnings: Vec::new(),
         }
     }
 
@@ -300,6 +305,25 @@ impl EditorKit {
                 out_name: channel_name.into(),
                 is_main: false,
             });
+            // Propagate the new channel to every existing sample: each sample
+            // gains a row reusing its primary file (the first row's file),
+            // with the side picked by the same cycling rule as import — the
+            // new channel's position modulo the file's channel count.
+            let index = inst.instrument.channels.len() - 1;
+            for sample in &mut inst.instrument.samples {
+                let Some(primary) = sample.audio_files.first() else {
+                    continue;
+                };
+                let file = primary.file.clone();
+                let wav_channels = hound::WavReader::open(inst.instrument.base_dir.join(&file))
+                    .map(|reader| usize::from(reader.spec().channels).max(1))
+                    .unwrap_or(1);
+                sample.audio_files.push(AudioFile {
+                    channel: channel_name.to_string(),
+                    file,
+                    file_channel: index % wav_channels,
+                });
+            }
         }
         inst.instrument.channel_map = inst.reference.channel_map.clone();
         if let Some(reference) = self.drumkit.instrument_refs.get_mut(instrument) {
@@ -343,9 +367,12 @@ impl EditorKit {
     ///
     /// Each sample holds exactly **one** audio file; that file feeds **every**
     /// channel of the instrument — one [`AudioFile`] row per instrument
-    /// channel, all referencing the same WAV, with `file_channel` picking the
-    /// channel at the same position inside the WAV (clamped to the WAV's
-    /// channel count). The WAV is referenced in place; the copy into
+    /// channel, all referencing the same WAV. `file_channel` cycles through
+    /// the WAV's channels in row order (`index % wav_channels`): a mono file
+    /// plays its only channel on every instrument channel, while a stereo
+    /// file alternates L, R, L, R, … across the channels. The user can then
+    /// re-pick files or sides per row in the sample panel. The WAV is
+    /// referenced in place; the copy into
     /// `<root>/<name>/samples/` happens during Save / Save As.
     ///
     /// `resample` marks the sample so its audio file is converted to the
@@ -381,9 +408,30 @@ impl EditorKit {
             .map(|(index, channel)| AudioFile {
                 channel: channel.name.clone(),
                 file: file.clone(),
-                file_channel: index.min(wav_channels - 1),
+                file_channel: index % wav_channels,
             })
             .collect();
+        // A multi-channel WAV needs at least two main channels to play both
+        // sides; with fewer, only the left side ends up audible (the first
+        // row's file channel), so warn the user instead of failing silently.
+        if wav_channels > 1 {
+            let main_channels = inst
+                .reference
+                .channel_map
+                .iter()
+                .filter(|map| map.is_main)
+                .count();
+            if main_channels < 2 {
+                let file_name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                self.warnings.push(format!(
+                    "'{file_name}' has {wav_channels} channels, but instrument '{}' has {main_channels} main channel(s) — not enough channels for a stereo sample; defaulting to the left channel.",
+                    inst.reference.name
+                ));
+            }
+        }
         let name = unique_sample_name(&inst.instrument.samples, path);
         inst.instrument.samples.push(Sample {
             name,
@@ -412,6 +460,13 @@ impl EditorKit {
         }
         inst.instrument.samples.remove(sample);
         self.dirty = true;
+    }
+
+    /// Drains and returns the non-fatal warnings collected by the latest
+    /// operations (e.g. stereo samples imported into an instrument with
+    /// fewer than two main channels).
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
     }
 
     pub fn set_sample_power(&mut self, instrument: usize, sample: usize, power: f32) {
