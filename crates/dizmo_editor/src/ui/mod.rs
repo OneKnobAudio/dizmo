@@ -652,7 +652,15 @@ impl App {
             Message::SampleChannelFilePicked(_, _, _, None) => {}
             Message::SampleSetChannelSide(instrument, sample, channel, right) => {
                 if let Some(kit) = &mut self.kit {
-                    kit.set_sample_channel_side(instrument, sample, &channel, usize::from(right));
+                    // Toggle: picking the side the row already plays removes
+                    // the row (unassigns the channel); picking the other side
+                    // moves the row to it.
+                    kit.toggle_sample_channel_side(
+                        instrument,
+                        sample,
+                        &channel,
+                        usize::from(right),
+                    );
                 }
             }
             Message::SampleRemoveChannelRow(instrument, sample, channel) => {
@@ -691,7 +699,8 @@ impl App {
                 self.preview_token += 1;
                 self.player.play(
                     &path,
-                    audio_file.file_channel,
+                    // A row without a chosen side previews the left channel.
+                    audio_file.file_channel.unwrap_or(0),
                     self.preview_volume,
                     self.preview_token,
                 );

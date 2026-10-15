@@ -321,7 +321,7 @@ impl EditorKit {
                 sample.audio_files.push(AudioFile {
                     channel: channel_name.to_string(),
                     file,
-                    file_channel: index % wav_channels,
+                    file_channel: Some(index % wav_channels),
                 });
             }
         }
@@ -408,7 +408,7 @@ impl EditorKit {
             .map(|(index, channel)| AudioFile {
                 channel: channel.name.clone(),
                 file: file.clone(),
-                file_channel: index % wav_channels,
+                file_channel: Some(index % wav_channels),
             })
             .collect();
         // A multi-channel WAV needs at least two main channels to play both
@@ -481,8 +481,9 @@ impl EditorKit {
     }
 
     /// Sets (or replaces) the audio file feeding `channel` of `sample` on
-    /// `instrument`, resetting its side to left (file channel 0). Returns the
-    /// file's channel count so the UI knows whether the L/R toggle applies.
+    /// `instrument`, leaving the side **unassigned** (the user then picks L or
+    /// R via the toggle). Returns the file's channel count so the UI knows
+    /// whether the L/R toggle applies.
     pub fn set_sample_channel_file(
         &mut self,
         instrument: usize,
@@ -507,12 +508,12 @@ impl EditorKit {
         {
             Some(audio) => {
                 audio.file = file;
-                audio.file_channel = 0;
+                audio.file_channel = None;
             }
             None => sample_ref.audio_files.push(AudioFile {
                 channel: channel.to_string(),
                 file,
-                file_channel: 0,
+                file_channel: None,
             }),
         }
         self.dirty = true;
@@ -557,10 +558,53 @@ impl EditorKit {
             .audio_files
             .iter_mut()
             .find(|audio| audio.channel == channel)
-            && audio.file_channel != file_channel
+            && audio.file_channel != Some(file_channel)
         {
-            audio.file_channel = file_channel;
+            audio.file_channel = Some(file_channel);
             self.dirty = true;
+        }
+    }
+
+    /// Toggles a row's side from the L/R buttons: clicking a side the row
+    /// does not play assigns it (creating the assignment and its visual
+    /// feedback); clicking the side the row **already** plays removes that
+    /// assignment — the file stays on the row, only the side selection is
+    /// cleared. A row with no file is left untouched.
+    pub fn toggle_sample_channel_side(
+        &mut self,
+        instrument: usize,
+        sample: usize,
+        channel: &str,
+        file_channel: usize,
+    ) {
+        let current = self.instruments.get(instrument).and_then(|inst| {
+            inst.instrument.samples.get(sample).and_then(|sample_ref| {
+                sample_ref
+                    .audio_files
+                    .iter()
+                    .find(|audio| audio.channel == channel)
+                    .map(|audio| audio.file_channel)
+            })
+        });
+        let Some(current) = current else {
+            // No row at all: nothing to toggle (the UI shows "+ pick file").
+            return;
+        };
+        if current == Some(file_channel) {
+            // Active side clicked again: drop the side assignment, keep the
+            // file on the row.
+            if let Some(inst) = self.instruments.get_mut(instrument)
+                && let Some(sample_ref) = inst.instrument.samples.get_mut(sample)
+                && let Some(audio) = sample_ref
+                    .audio_files
+                    .iter_mut()
+                    .find(|audio| audio.channel == channel)
+            {
+                audio.file_channel = None;
+                self.dirty = true;
+            }
+        } else {
+            self.set_sample_channel_side(instrument, sample, channel, file_channel);
         }
     }
 

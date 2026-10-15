@@ -54,12 +54,14 @@ impl SampleBank {
 
     /// The mono buffer for one `AudioFile` reference, resolved against
     /// `base_dir` (the directory of the instrument XML that declared it).
-    /// A reference to a channel beyond the file's count falls back to the
-    /// file's last decoded channel (the loader clamps such references).
+    /// A reference to a channel beyond the file's count (or one without a
+    /// chosen side, `file_channel == None`) falls back to the file's last
+    /// decoded channel.
     pub fn audio_file(&self, base_dir: &Path, audio: &AudioFile) -> Option<&Arc<[f32]>> {
         let file = self.files.get(&base_dir.join(&audio.file))?;
-        file.channels
-            .get(audio.file_channel)
+        audio
+            .file_channel
+            .and_then(|channel| file.channels.get(channel))
             .and_then(Option::as_ref)
             .or_else(|| file.channels.iter().rev().find_map(Option::as_ref))
     }
@@ -174,15 +176,20 @@ fn unique_files(kit: &DizmoKit) -> Vec<SampleTask> {
     for instrument in &kit.instruments {
         for sample in &instrument.samples {
             for audio in &sample.audio_files {
+                // Rows without a chosen side (editor state) reference no
+                // channel and are skipped.
+                let Some(file_channel) = audio.file_channel else {
+                    continue;
+                };
                 let path = instrument.base_dir.join(&audio.file);
                 if let Some(&index) = indexes.get(&path) {
-                    tasks[index].channels.push(audio.file_channel);
+                    tasks[index].channels.push(file_channel);
                 } else {
                     indexes.insert(path.clone(), tasks.len());
                     tasks.push(SampleTask {
                         path,
                         sample: sample.name.clone(),
-                        channels: vec![audio.file_channel],
+                        channels: vec![file_channel],
                     });
                 }
             }

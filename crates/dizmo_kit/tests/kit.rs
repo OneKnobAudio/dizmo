@@ -156,8 +156,8 @@ fn parses_v2_samples_with_power() {
     // filechannel is 1-based in XML, stored 0-based.
     assert_eq!(softest.audio_files[0].channel, "AmbL");
     assert_eq!(softest.audio_files[0].file, "samples/kick.wav");
-    assert_eq!(softest.audio_files[0].file_channel, 0);
-    assert_eq!(softest.audio_files[2].file_channel, 2);
+    assert_eq!(softest.audio_files[0].file_channel, Some(0));
+    assert_eq!(softest.audio_files[2].file_channel, Some(2));
 
     // Velocity layers: samples sorted by ascending power.
     let powers: Vec<f32> = kick
@@ -175,7 +175,7 @@ fn parses_normalized_flag() {
 
     assert!(snare.samples[0].normalized);
     assert!(!snare.samples[1].normalized);
-    assert_eq!(snare.samples[0].audio_files[0].file_channel, 0);
+    assert_eq!(snare.samples[0].audio_files[0].file_channel, Some(0));
 }
 
 #[test]

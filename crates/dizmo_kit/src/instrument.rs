@@ -101,8 +101,11 @@ pub struct AudioFile {
     pub channel: String,
     /// Path of the WAV file, relative to the instrument XML file.
     pub file: String,
-    /// Zero-based channel index inside the WAV (the XML is 1-based).
-    pub file_channel: usize,
+    /// Zero-based channel index inside the WAV (the XML is 1-based). `None`
+    /// means no side is chosen yet (editor state: the file is assigned to the
+    /// channel, but L/R has not been picked); the saver writes `filechannel`
+    /// 1 (the left channel) for such rows, matching DrumGizmo's default.
+    pub file_channel: Option<usize>,
 }
 
 /// A velocity group (version 1.0 instruments only).
@@ -209,7 +212,7 @@ pub fn parse_str(text: &str, path: &Path) -> Result<Instrument, KitError> {
                             Ok(AudioFile {
                                 channel,
                                 file,
-                                file_channel: file_channel as usize,
+                                file_channel: Some(file_channel as usize),
                             })
                         })
                         .collect::<Result<Vec<_>, KitError>>()?;

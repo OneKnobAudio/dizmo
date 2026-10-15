@@ -417,13 +417,14 @@ pub fn sample_panel<'a>(
                             sample_idx,
                             name.clone(),
                         ))
+                        .style(pill(false))
                         .width(Length::Fill),
                 ];
                 if count >= 2 {
                     row = row
                         .push(
                             button(text("L").size(11))
-                                .style(pill(af.file_channel == 0))
+                                .style(pill(af.file_channel == Some(0)))
                                 .on_press(Message::SampleSetChannelSide(
                                     instrument,
                                     sample_idx,
@@ -433,7 +434,7 @@ pub fn sample_panel<'a>(
                         )
                         .push(
                             button(text("R").size(11))
-                                .style(pill(af.file_channel == 1))
+                                .style(pill(af.file_channel == Some(1)))
                                 .on_press(Message::SampleSetChannelSide(
                                     instrument,
                                     sample_idx,
@@ -501,6 +502,7 @@ pub fn sample_panel<'a>(
             iced::widget::slider(0.0..=1.0, sample.power, move |value| Message::SamplePower(
                 instrument, sample_idx, value
             ),)
+            .step(0.01_f32)
             .width(Length::Fill),
             text(format!("{:.2}", sample.power))
                 .size(11)

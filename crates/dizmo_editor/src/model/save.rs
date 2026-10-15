@@ -459,10 +459,12 @@ fn serialize_instrument(inst: &Instrument, audio_paths: &[String]) -> String {
                     .map(String::as_str)
                     .unwrap_or(&audio.file);
                 out.push_str(&format!(
-                    "      <audiofile channel=\"{}\" file=\"{}\" filechannel=\"{}\"/>\n",
+                    "      <audiofile channel=\"{}\" file=\"{}\" filechannel=\"{}\"/>",
                     esc(&audio.channel),
                     esc(file),
-                    audio.file_channel + 1
+                    // A row without a chosen side saves as the left channel
+                    // (DrumGizmo's default when filechannel is absent).
+                    audio.file_channel.unwrap_or(0) + 1
                 ));
                 audio_index += 1;
             }
@@ -703,7 +705,7 @@ mod tests {
                 audio_files: vec![dizmo_kit::AudioFile {
                     channel: "A".into(),
                     file: "samples/ghost.wav".into(),
-                    file_channel: 0,
+                    file_channel: Some(0),
                 }],
             });
 
@@ -819,7 +821,7 @@ mod tests {
         assert_eq!(sample.audio_files.len(), 3);
         for (i, audio) in sample.audio_files.iter().enumerate() {
             assert_eq!(audio.channel, kit.drumkit.channels[i].name);
-            assert_eq!(audio.file_channel, i % 2);
+            assert_eq!(audio.file_channel, Some(i % 2));
             assert!(Path::new(&audio.file).is_absolute());
         }
         assert!(
@@ -917,7 +919,7 @@ mod tests {
         let sample = &kit.instruments[inst].instrument.samples[index];
         assert_eq!(sample.audio_files.len(), 3);
         assert!(
-            sample.audio_files.iter().all(|a| a.file_channel == 0),
+            sample.audio_files.iter().all(|a| a.file_channel == Some(0)),
             "a mono sample must reference file channel 0 on every channel"
         );
 
@@ -998,12 +1000,20 @@ mod tests {
         assert_eq!(stereo_rows.len(), 3);
         let room = stereo_rows.iter().find(|a| a.channel == "Room").unwrap();
         assert_eq!(room.file, stereo_rows[0].file);
-        assert_eq!(room.file_channel, 2 % 2, "stereo file cycles back to L");
+        assert_eq!(
+            room.file_channel,
+            Some(2 % 2),
+            "stereo file cycles back to L"
+        );
 
         let mono_rows = &kit.instruments[inst].instrument.samples[mono_sample].audio_files;
         assert_eq!(mono_rows.len(), 3);
         let room = mono_rows.iter().find(|a| a.channel == "Room").unwrap();
-        assert_eq!(room.file_channel, 0, "mono file feeds its only channel");
+        assert_eq!(
+            room.file_channel,
+            Some(0),
+            "mono file feeds its only channel"
+        );
 
         // Unassigning removes the propagated rows again.
         kit.toggle_channel_assignment(inst, "Room");
@@ -1011,6 +1021,74 @@ mod tests {
             assert_eq!(sample.audio_files.len(), 2);
             assert!(sample.audio_files.iter().all(|a| a.channel != "Room"));
         }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn toggling_the_active_side_clears_the_assignment_but_keeps_the_file() {
+        let root = std::env::temp_dir().join(format!("dizmo_editor_toggle_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+
+        let mut kit = EditorKit::new_kit(
+            "Toggle Test",
+            48000.0,
+            &["OverheadL".into(), "OverheadR".into()],
+        );
+        let inst = kit.add_instrument("Overhead");
+        kit.toggle_channel_assignment(inst, "OverheadL");
+        kit.toggle_channel_assignment(inst, "OverheadR");
+
+        let stereo = root.join("stereo.wav");
+        write_wav_channels(&stereo, 2);
+        let sample = kit.import_sample(inst, &stereo, false).unwrap();
+
+        let side = |kit: &EditorKit, channel: &str| {
+            kit.instruments[inst].instrument.samples[sample]
+                .audio_files
+                .iter()
+                .find(|a| a.channel == channel)
+                .map(|a| a.file_channel)
+        };
+
+        // The import starts the rows at L (index 0) and R (index 1).
+        assert_eq!(side(&kit, "OverheadL"), Some(Some(0)));
+        assert_eq!(side(&kit, "OverheadR"), Some(Some(1)));
+
+        // Clicking R on the row that already plays R removes the side
+        // assignment but keeps the file on the row.
+        kit.toggle_sample_channel_side(inst, sample, "OverheadR", 1);
+        assert_eq!(side(&kit, "OverheadR"), Some(None));
+        assert_eq!(
+            kit.instruments[inst].instrument.samples[sample]
+                .audio_files
+                .len(),
+            2,
+            "the row (and its file) must survive the toggle"
+        );
+
+        // Clicking R again re-creates the assignment and its feedback.
+        kit.toggle_sample_channel_side(inst, sample, "OverheadR", 1);
+        assert_eq!(side(&kit, "OverheadR"), Some(Some(1)));
+
+        // Clicking L on the unassigned row assigns it.
+        kit.toggle_sample_channel_side(inst, sample, "OverheadR", 0);
+        assert_eq!(side(&kit, "OverheadR"), Some(Some(0)));
+
+        // Picking a file leaves the side unassigned until L/R is clicked.
+        let second = root.join("second.wav");
+        write_wav_channels(&second, 2);
+        kit.set_sample_channel_file(inst, sample, "OverheadL", &second)
+            .unwrap();
+        assert_eq!(side(&kit, "OverheadL"), Some(None));
+        kit.toggle_sample_channel_side(inst, sample, "OverheadL", 1);
+        assert_eq!(side(&kit, "OverheadL"), Some(Some(1)));
+
+        // A channel with no row is untouched.
+        kit.remove_sample_channel(inst, sample, "OverheadR");
+        kit.toggle_sample_channel_side(inst, sample, "OverheadR", 0);
+        assert_eq!(side(&kit, "OverheadR"), None);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1202,7 +1280,7 @@ mod tests {
                     audio_files: vec![AudioFile {
                         channel: "Hihat".into(),
                         file: "samples/hc1.wav".into(),
-                        file_channel: 0,
+                        file_channel: Some(0),
                     }],
                 },
                 Sample {
@@ -1213,7 +1291,7 @@ mod tests {
                     audio_files: vec![AudioFile {
                         channel: "Hihat".into(),
                         file: "samples/hc2.wav".into(),
-                        file_channel: 0,
+                        file_channel: Some(0),
                     }],
                 },
             ],
@@ -1312,6 +1390,8 @@ mod tests {
         );
 
         // Task 2: set the right side's channel (side index 1, XML filechannel 2).
+        // The left row was never given a side: picking a file leaves the side
+        // unassigned until the user clicks L or R.
         kit.set_sample_channel_side(inst, sample, "OverheadR", 1);
         let rows = &kit.instruments[inst].instrument.samples[sample].audio_files;
         assert_eq!(
@@ -1319,17 +1399,17 @@ mod tests {
                 .find(|a| a.channel == "OverheadL")
                 .unwrap()
                 .file_channel,
-            0
+            None
         );
         assert_eq!(
             rows.iter()
                 .find(|a| a.channel == "OverheadR")
                 .unwrap()
                 .file_channel,
-            1
+            Some(1)
         );
 
-        // Removing a row and re-adding it resets the side to left.
+        // Removing a row and re-adding it leaves the side unassigned again.
         kit.remove_sample_channel(inst, sample, "OverheadL");
         assert!(
             !kit.instruments[inst].instrument.samples[sample]
@@ -1346,10 +1426,13 @@ mod tests {
                 .find(|a| a.channel == "OverheadL")
                 .unwrap()
                 .file_channel,
-            0
+            None
         );
 
-        // Save + reload: rows and sides survive (relative paths under samples/).
+        // Save + reload: rows and sides survive (relative paths under
+        // samples/). The unassigned left row saves as filechannel 1 and
+        // reloads as the left channel (Some(0)), matching DrumGizmo's
+        // default.
         kit.root_dir = Some(root.clone());
         save(&mut kit).unwrap();
         let loaded = DizmoKit::load(root.join("Stereo Test.xml")).unwrap();
@@ -1361,8 +1444,8 @@ mod tests {
                 .file
                 .ends_with(&format!("l_{}.wav", std::process::id()))
         );
-        assert_eq!(l_row.file_channel, 0);
-        assert_eq!(r_row.file_channel, 1);
+        assert_eq!(l_row.file_channel, Some(0));
+        assert_eq!(r_row.file_channel, Some(1));
 
         let _ = std::fs::remove_dir_all(&root);
     }

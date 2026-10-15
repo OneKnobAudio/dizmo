@@ -21,7 +21,9 @@ pub fn preview_controls<'a>(
             .on_press(on_toggle)
             .style(pill(playing)),
         text("Vol").size(11).color(TEXT_DIM),
-        slider(0.0..=1.5, volume, on_volume).width(Length::Fill),
+        slider(0.0..=1.5, volume, on_volume)
+            .step(0.01_f32)
+            .width(Length::Fill),
         text(format!("{:.0}%", volume * 100.0))
             .size(11)
             .color(TEXT)
