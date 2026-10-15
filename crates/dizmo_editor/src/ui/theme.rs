@@ -10,6 +10,7 @@ pub const CARD_BORDER: Color = Color::from_rgb8(0x2d, 0x31, 0x38);
 pub const FIELD_BG: Color = Color::from_rgb8(0x23, 0x26, 0x2c);
 pub const FIELD_BORDER: Color = Color::from_rgb8(0x3a, 0x3f, 0x48);
 pub const FIELD_HOVER: Color = Color::from_rgb8(0x2a, 0x2e, 0x36);
+pub const FIELD_BG_SELECTED: Color = Color::from_rgb8(0xC9, 0x78, 0x70);
 pub const TEXT: Color = Color::from_rgb8(0xf2, 0xf4, 0xf7);
 pub const TEXT_DIM: Color = Color::from_rgb8(0x8b, 0x90, 0x99);
 pub const ACCENT: Color = Color::from_rgb8(0x55, 0x84, 0xc8);
@@ -34,7 +35,7 @@ pub fn theme() -> Theme {
 /// A button style with a `selected` accent border (toolbar / tree pills).
 pub fn pill_button_style(selected: bool, status: button::Status) -> button::Style {
     let (background, border) = if selected {
-        (FIELD_BG, ACCENT)
+        (FIELD_BG_SELECTED, FIELD_BORDER)
     } else if status == button::Status::Hovered {
         (FIELD_HOVER, ACCENT)
     } else {
