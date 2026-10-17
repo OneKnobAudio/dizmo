@@ -15,7 +15,7 @@ use super::theme::{
     text_input_style,
 };
 use super::{Message, Selection};
-use crate::model::EditorKit;
+use crate::model::{EditorKit, Move};
 
 pub fn welcome() -> Element<'static, Message> {
     container(
@@ -115,9 +115,7 @@ pub fn kit_panel<'a>(kit: &'a EditorKit, samplerate_text: &'a str) -> Element<'a
             Message::KitMetadataImageMap,
         ),
         iced::widget::rule::horizontal(1.0),
-        text("Output channels  ·  workflow step 1")
-            .size(12)
-            .color(TEXT),
+        text("Output channels").size(12).color(TEXT),
     ]
     .spacing(8);
 
@@ -167,9 +165,16 @@ pub fn kit_panel<'a>(kit: &'a EditorKit, samplerate_text: &'a str) -> Element<'a
         );
     } else {
         let mut channels = column![].spacing(4);
+        let channel_count = kit.drumkit.channels.len();
         for (i, ch) in kit.drumkit.channels.iter().enumerate() {
             channels = channels.push(
                 row![
+                    move_button("▲", i > 0, Message::MoveChannel(i, Move::Up)),
+                    move_button(
+                        "▼",
+                        i + 1 < channel_count,
+                        Message::MoveChannel(i, Move::Down),
+                    ),
                     text_input("Channel name", &ch.name)
                         .on_input(move |name| Message::RenameChannel(i, name))
                         .style(text_input_style)
@@ -254,8 +259,29 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
         let main = checkbox(is_main)
             .label("main")
             .on_toggle(move |checked| Message::SetChannelMain(index, name.clone(), checked));
+        // Reorder controls move the instrument channel within the *assigned*
+        // list (that list's order drives import side cycling); unassigned
+        // rows have no instrument channel and get disabled arrows.
+        let position = inst
+            .instrument
+            .channels
+            .iter()
+            .position(|c| c.name == *name);
+        let up = move_button(
+            "▲",
+            position.is_some_and(|pos| pos > 0),
+            Message::MoveInstrumentChannel(index, position.unwrap_or(0), Move::Up),
+        );
+        let assigned_count = inst.instrument.channels.len();
+        let down = move_button(
+            "▼",
+            position.is_some_and(|pos| pos + 1 < assigned_count),
+            Message::MoveInstrumentChannel(index, position.unwrap_or(0), Move::Down),
+        );
         channel_map = channel_map.push(
             row![
+                up,
+                down,
                 text(name).size(11).color(TEXT).width(Length::Fixed(140.0)),
                 assigned,
                 main,
@@ -311,18 +337,24 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
 
     let mut samples = column![].spacing(4);
     if inst.instrument.samples.is_empty() {
-        samples = samples.push(
-            text("No samples yet — add some (workflow step 3).")
-                .size(11)
-                .color(TEXT_DIM),
-        );
+        samples = samples.push(text("No samples yet — add some.").size(11).color(TEXT_DIM));
     }
+    let sample_count = inst.instrument.samples.len();
     for (s, sample) in inst.instrument.samples.iter().enumerate() {
         samples = samples.push(
-            button(text(&sample.name).size(12).color(TEXT))
-                .on_press(Message::Select(Selection::Sample(index, s)))
-                .style(move |_theme, status| pill_button_style(false, status))
-                .width(Length::Fill),
+            row![
+                move_button("▲", s > 0, Message::MoveSample(index, s, Move::Up)),
+                move_button(
+                    "▼",
+                    s + 1 < sample_count,
+                    Message::MoveSample(index, s, Move::Down),
+                ),
+                button(text(&sample.name).size(12).color(TEXT))
+                    .on_press(Message::Select(Selection::Sample(index, s)))
+                    .style(move |_theme, status| pill_button_style(false, status))
+                    .width(Length::Fill),
+            ]
+            .spacing(6),
         );
     }
 
@@ -349,13 +381,7 @@ pub fn instrument_panel<'a>(kit: &'a EditorKit, index: usize) -> Element<'a, Mes
             move |description| Message::InstrumentDescription(index, description),
         ),
         normalized,
-        column![
-            text("Channel map  ·  workflow step 4")
-                .size(11)
-                .color(TEXT_DIM),
-            channel_map,
-        ]
-        .spacing(4),
+        column![text("Channel map").size(11).color(TEXT_DIM), channel_map,].spacing(4),
         iced::widget::rule::horizontal(1.0),
         text("Chokes  ·  cut these instruments on trigger")
             .size(11)
@@ -482,11 +508,9 @@ pub fn sample_panel<'a>(
     }
     if inst.instrument.channels.is_empty() {
         audio_files = audio_files.push(
-            text(
-                "No channels assigned — assign channels to this instrument first (workflow step 4).",
-            )
-            .size(11)
-            .color(TEXT_DIM),
+            text("No channels assigned — assign channels to this instrument first.")
+                .size(11)
+                .color(TEXT_DIM),
         );
     }
     column![
@@ -631,4 +655,17 @@ pub(crate) fn midi_note_name(note: u8) -> String {
     ];
     let octave = (note / 12).saturating_sub(1);
     format!("{}{}", NAMES[(note % 12) as usize], octave)
+}
+
+/// A small ▲/▼ reorder button. Disabled (no `on_press`, dimmed) when the item
+/// cannot move further in that direction.
+fn move_button<'a>(label: &'static str, enabled: bool, message: Message) -> Element<'a, Message> {
+    let colour = if enabled { TEXT } else { TEXT_DIM };
+    let button = button(text(label).size(10).color(colour));
+    let button = if enabled {
+        button.on_press(message)
+    } else {
+        button
+    };
+    button.style(pill(false)).width(Length::Fixed(22.0)).into()
 }

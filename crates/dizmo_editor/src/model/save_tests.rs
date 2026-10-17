@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::Move;
 use crate::model::load::load;
 use dizmo_kit::DizmoKit;
 
@@ -1148,6 +1149,187 @@ fn equal_powers_are_left_untouched() {
     save(&mut kit).unwrap();
     let loaded = DizmoKit::load(root.join("drumkit.xml")).unwrap();
     assert!(loaded.instruments[0].samples.iter().all(|s| s.power == 0.5));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn move_operations_swap_and_keep_parallel_structures_in_sync() {
+    let root = std::env::temp_dir().join(format!("dizmo_editor_moves_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+
+    let mut kit = EditorKit::new_kit(
+        "Moves",
+        48000.0,
+        &["Kick".into(), "Snare".into(), "Room".into()],
+    );
+    let a = kit.add_instrument("A");
+    kit.add_instrument("B");
+    kit.add_instrument("C");
+    kit.toggle_channel_assignment(a, "Kick");
+    kit.toggle_channel_assignment(a, "Snare");
+    kit.toggle_channel_assignment(a, "Room");
+
+    // Edge moves are no-ops.
+    kit.dirty = false;
+    assert!(!kit.move_kit_channel(0, Move::Up));
+    assert!(!kit.move_kit_channel(2, Move::Down));
+    assert!(!kit.move_instrument_channel(a, 0, Move::Up));
+    assert!(!kit.move_instrument_channel(a, 2, Move::Down));
+    assert!(!kit.move_sample(a, usize::MAX, Move::Up));
+    assert!(!kit.dirty, "edge no-ops must not mark the kit dirty");
+
+    // Kit channel move: order swaps, nums renumbered, instrument mappings
+    // stay name-based (they follow the channel).
+    assert!(kit.move_kit_channel(0, Move::Down));
+    assert_eq!(kit.drumkit.channels[0].name, "Snare");
+    assert_eq!(kit.drumkit.channels[0].num, 0);
+    assert_eq!(kit.drumkit.channels[1].name, "Kick");
+    assert_eq!(kit.drumkit.channels[1].num, 1);
+    assert_eq!(kit.instruments[0].reference.channel_map[0].out_name, "Kick");
+    assert_eq!(kit.instruments[0].instrument.channels[0].name, "Kick");
+
+    // Instrument channel move: channels and channel_map stay parallel, the
+    // drumkit reference is synced, and main flags travel.
+    let a = 0;
+    kit.set_channel_main(a, "Kick", true);
+    assert!(kit.move_instrument_channel(a, 0, Move::Down));
+    let inst = &kit.instruments[a];
+    assert_eq!(inst.instrument.channels[0].name, "Snare");
+    assert_eq!(inst.instrument.channels[1].name, "Kick");
+    assert_eq!(inst.reference.channel_map[0].out_name, "Snare");
+    assert!(!inst.reference.channel_map[0].is_main);
+    assert_eq!(inst.reference.channel_map[1].out_name, "Kick");
+    assert!(inst.reference.channel_map[1].is_main);
+    assert_eq!(
+        kit.drumkit.instrument_refs[a].channel_map,
+        inst.reference.channel_map
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn moving_a_kit_channel_keeps_instrument_mappings_and_round_trips() {
+    let root = std::env::temp_dir().join(format!("dizmo_editor_kit_move_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+
+    let mut kit = EditorKit::new_kit("Move Kit", 48000.0, &["Kick".into(), "Snare".into()]);
+    kit.root_dir = Some(root.clone());
+    let inst = kit.add_instrument("Snare Drum");
+    kit.toggle_channel_assignment(inst, "Snare");
+    kit.set_channel_main(inst, "Snare", true);
+
+    assert!(kit.move_kit_channel(1, Move::Up));
+    assert_eq!(kit.drumkit.channels[0].name, "Snare");
+    assert_eq!(kit.drumkit.channels[1].name, "Kick");
+    let map = &kit.instruments[inst].reference.channel_map;
+    assert_eq!(map.len(), 1);
+    assert_eq!(map[0].out_name, "Snare");
+    assert!(map[0].is_main);
+
+    save(&mut kit).unwrap();
+    let loaded = DizmoKit::load(root.join("Move Kit.xml")).unwrap();
+    assert_eq!(loaded.drums.channels[0].name, "Snare");
+    assert_eq!(loaded.drums.channels[1].name, "Kick");
+    assert_eq!(loaded.instruments[0].channel_map[0].out_name, "Snare");
+    assert!(loaded.instruments[0].channel_map[0].is_main);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn moving_an_instrument_channel_reorders_import_side_cycling() {
+    let root = std::env::temp_dir().join(format!("dizmo_editor_ch_move_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+
+    let mut kit = EditorKit::new_kit("Chan Move", 48000.0, &["A".into(), "B".into(), "C".into()]);
+    let inst = kit.add_instrument("Inst");
+    kit.toggle_channel_assignment(inst, "A");
+    kit.toggle_channel_assignment(inst, "B");
+    kit.toggle_channel_assignment(inst, "C");
+
+    let stereo = root.join("stereo.wav");
+    write_wav_channels(&stereo, 2);
+    let sample = kit.import_sample(inst, &stereo, false).unwrap();
+    let rows = &kit.instruments[inst].instrument.samples[sample].audio_files;
+    assert_eq!(rows[0].channel, "A");
+    assert_eq!(rows[0].file_channel, Some(0));
+    assert_eq!(rows[1].channel, "B");
+    assert_eq!(rows[1].file_channel, Some(1));
+    assert_eq!(rows[2].channel, "C");
+    assert_eq!(rows[2].file_channel, Some(0));
+
+    // Move B to the front: the cycling follows the new order.
+    assert!(kit.move_instrument_channel(inst, 1, Move::Up));
+    kit.remove_sample(inst, sample);
+    let sample = kit.import_sample(inst, &stereo, false).unwrap();
+    let rows = &kit.instruments[inst].instrument.samples[sample].audio_files;
+    assert_eq!(rows[0].channel, "B");
+    assert_eq!(rows[0].file_channel, Some(0));
+    assert_eq!(rows[1].channel, "A");
+    assert_eq!(rows[1].file_channel, Some(1));
+    assert_eq!(rows[2].channel, "C");
+    assert_eq!(rows[2].file_channel, Some(0));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn moving_a_sample_respreads_powers_and_round_trips() {
+    let root = std::env::temp_dir().join(format!("dizmo_editor_s_move_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+
+    let mut kit = EditorKit::new_kit("Sample Move", 48000.0, &["Kick".into()]);
+    kit.root_dir = Some(root.clone());
+    let inst = kit.add_instrument("Kick");
+    kit.toggle_channel_assignment(inst, "Kick");
+
+    for name in ["a1", "a2", "a3"] {
+        let wav = root.join(format!("{name}.wav"));
+        write_wav_channels(&wav, 1);
+        kit.import_sample(inst, &wav, false).unwrap();
+    }
+    let powers = |kit: &EditorKit| -> Vec<f32> {
+        kit.instruments[inst]
+            .instrument
+            .samples
+            .iter()
+            .map(|s| s.power)
+            .collect()
+    };
+    // Import spreads 1/6, 3/6, 5/6 in list order.
+    for (i, power) in powers(&kit).iter().enumerate() {
+        assert!((power - (i as f32 + 0.5) / 3.0).abs() < 1e-6);
+    }
+
+    // Edge move is a no-op and leaves powers untouched.
+    assert!(!kit.move_sample(inst, 0, Move::Up));
+
+    // Moving the last sample up re-spreads by the new order: the sample
+    // formerly at the loudest slot now sits in the middle.
+    assert!(kit.move_sample(inst, 2, Move::Up));
+    let samples = &kit.instruments[inst].instrument.samples;
+    assert_eq!(samples[0].name, "a1");
+    assert_eq!(samples[1].name, "a3");
+    assert_eq!(samples[2].name, "a2");
+    for (i, power) in powers(&kit).iter().enumerate() {
+        assert!((power - (i as f32 + 0.5) / 3.0).abs() < 1e-6);
+    }
+
+    // The new order round-trips through save/load.
+    save(&mut kit).unwrap();
+    let loaded = DizmoKit::load(root.join("Sample Move.xml")).unwrap();
+    let names: Vec<&str> = loaded.instruments[0]
+        .samples
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(names, ["a1", "a3", "a2"]);
 
     let _ = std::fs::remove_dir_all(&root);
 }

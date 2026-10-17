@@ -6,6 +6,29 @@ use dizmo_kit::{
     MidiMap, MidiMapEntry, Sample,
 };
 
+/// Direction for the list reordering operations (▲ / ▼).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Move {
+    Up,
+    Down,
+}
+
+impl Move {
+    /// -1 for Up, +1 for Down.
+    fn offset(self) -> isize {
+        match self {
+            Move::Up => -1,
+            Move::Down => 1,
+        }
+    }
+}
+
+/// The neighbor index `index` swaps with for `dir`, or `None` at the edges.
+fn swap_target(len: usize, index: usize, dir: Move) -> Option<usize> {
+    let target = index as isize + dir.offset();
+    (target >= 0 && target < len as isize).then_some(target as usize)
+}
+
 /// The General MIDI drum note range: notes 35-81 (percussion on GM channel
 /// 10). Used by the editor's default mapping to pre-fill the midimap rows;
 /// the instruments are left to the user.
@@ -69,7 +92,7 @@ pub struct EditorInstrument {
 }
 
 impl EditorKit {
-    /// An empty v2.0 kit from the New Kit dialog (workflow step 1: channels).
+    /// An empty v2.0 kit from the New Kit dialog (channels are defined first).
     pub fn new_kit(name: &str, samplerate: f64, channels: &[String]) -> Self {
         let kit_channels: Vec<KitChannel> = channels
             .iter()
@@ -103,7 +126,7 @@ impl EditorKit {
         }
     }
 
-    /// Workflow step 2: add a new, unassigned instrument.
+    /// Add a new, unassigned instrument.
     pub fn add_instrument(&mut self, name: &str) -> usize {
         let id = self.instruments.len();
         let file = PathBuf::from(format!("inst_{}.xml", slug(name)));
@@ -389,7 +412,7 @@ impl EditorKit {
         }
     }
 
-    /// Workflow step 3: import a WAV file as a new sample.
+    /// Import a WAV file as a new sample.
     ///
     /// Each sample holds exactly **one** audio file; that file feeds **every**
     /// channel of the instrument — one [`AudioFile`] row per instrument
@@ -708,6 +731,64 @@ impl EditorKit {
             }
         }
         self.dirty = true;
+    }
+
+    // --- Reordering (UI_REFACTOR.md) ---
+
+    /// Moves the kit channel at `index` one slot up/down. Instruments mapped
+    /// to the channel follow it automatically (references are name-based);
+    /// only the positional `num` is renumbered.
+    pub fn move_kit_channel(&mut self, index: usize, dir: Move) -> bool {
+        let Some(target) = swap_target(self.drumkit.channels.len(), index, dir) else {
+            return false;
+        };
+        self.drumkit.channels.swap(index, target);
+        self.drumkit.channels[index].num = index;
+        self.drumkit.channels[target].num = target;
+        self.dirty = true;
+        true
+    }
+
+    /// Moves the instrument channel at `index` one slot up/down, keeping the
+    /// parallel channel map in the same order. `main` flags travel with
+    /// their entries. Note the order drives the import side cycling and the
+    /// engine's primary-channel fallback.
+    pub fn move_instrument_channel(&mut self, instrument: usize, index: usize, dir: Move) -> bool {
+        {
+            let Some(inst) = self.instruments.get_mut(instrument) else {
+                return false;
+            };
+            let Some(target) = swap_target(inst.instrument.channels.len(), index, dir) else {
+                return false;
+            };
+            if target >= inst.reference.channel_map.len() {
+                return false;
+            }
+            inst.instrument.channels.swap(index, target);
+            inst.reference.channel_map.swap(index, target);
+        }
+        self.sync_reference(instrument);
+        self.dirty = true;
+        true
+    }
+
+    /// Moves the sample at `index` one slot up/down and re-spreads the powers
+    /// across the new order — the i-th of N samples gets `(i + 0.5) / N` — so
+    /// the list stays ordered soft→loud (the import rule).
+    pub fn move_sample(&mut self, instrument: usize, index: usize, dir: Move) -> bool {
+        let Some(inst) = self.instruments.get_mut(instrument) else {
+            return false;
+        };
+        let Some(target) = swap_target(inst.instrument.samples.len(), index, dir) else {
+            return false;
+        };
+        inst.instrument.samples.swap(index, target);
+        let count = inst.instrument.samples.len();
+        for (i, sample) in inst.instrument.samples.iter_mut().enumerate() {
+            sample.power = (i as f32 + 0.5) / count as f32;
+        }
+        self.dirty = true;
+        true
     }
 
     /// Adds a midimap row for `note` if it is not mapped yet.

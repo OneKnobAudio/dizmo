@@ -97,18 +97,13 @@ pub fn new_kit_modal<'a>(draft: &'a NewKitDraft) -> Element<'a, Message> {
         scrollable(
             column![
                 text("New Kit").size(16).color(TEXT),
-                text("Workflow: channels first, instruments after.")
-                    .size(11)
-                    .color(TEXT_DIM),
                 text_input("Kit name", &draft.name)
                     .on_input(|value| Message::NewKitModal(ModalMessage::Name(value)))
                     .style(text_input_style),
                 text_input("Sample rate (Hz)", &draft.samplerate)
                     .on_input(|value| Message::NewKitModal(ModalMessage::Samplerate(value)))
                     .style(text_input_style),
-                text("Output channels  ·  workflow step 1")
-                    .size(11)
-                    .color(TEXT_DIM),
+                text("Output channels").size(11).color(TEXT_DIM),
                 channels,
                 row![
                     button(text("+ Add channel"))

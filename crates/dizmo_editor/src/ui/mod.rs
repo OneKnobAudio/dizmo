@@ -16,6 +16,7 @@ use rfd::AsyncFileDialog;
 
 use crate::audio::PreviewPlayer;
 use crate::model::EditorKit;
+use crate::model::Move;
 use crate::model::load::load;
 use crate::model::save::save;
 
@@ -90,6 +91,7 @@ pub enum Message {
     AddChannel,
     RemoveChannel(usize),
     RenameChannel(usize, String),
+    MoveChannel(usize, Move),
     AddInstrument,
     RemoveInstrument(usize),
     RenameInstrument(usize, String),
@@ -101,9 +103,11 @@ pub enum Message {
     RemoveChoke(usize, usize),
     ToggleChannelAssignment(usize, String),
     SetChannelMain(usize, String, bool),
+    MoveInstrumentChannel(usize, usize, Move),
     RemoveSample(usize, usize),
     RenameSample(usize, usize, String),
     SamplePower(usize, usize, f32),
+    MoveSample(usize, usize, Move),
     InstrumentNormalized(usize, bool),
     SamplePickChannelFile(usize, usize, String),
     SampleChannelFilePicked(usize, usize, String, Option<PathBuf>),
@@ -407,6 +411,20 @@ impl App {
                     kit.rename_channel(i, &name);
                 }
             }
+            Message::MoveChannel(i, dir) => {
+                if let Some(kit) = &mut self.kit {
+                    let name = kit.drumkit.channels.get(i).map(|c| c.name.clone());
+                    if kit.move_kit_channel(i, dir)
+                        && let Some(name) = name
+                    {
+                        // The moved channel takes its assigned instruments
+                        // with it (mappings are name-based).
+                        self.status = Some(format!(
+                            "Moved '{name}' — instruments assigned to it follow the channel."
+                        ));
+                    }
+                }
+            }
             Message::AddInstrument => {
                 if let Some(kit) = &mut self.kit {
                     let n = kit.instruments.len();
@@ -592,6 +610,11 @@ impl App {
                     kit.set_channel_main(i, &channel, is_main);
                 }
             }
+            Message::MoveInstrumentChannel(i, c, dir) => {
+                if let Some(kit) = &mut self.kit {
+                    kit.move_instrument_channel(i, c, dir);
+                }
+            }
             Message::RemoveSample(i, s) => {
                 if let Some(kit) = &mut self.kit {
                     kit.remove_sample(i, s);
@@ -611,6 +634,22 @@ impl App {
             Message::SamplePower(i, s, value) => {
                 if let Some(kit) = &mut self.kit {
                     kit.set_sample_power(i, s, value);
+                }
+            }
+            Message::MoveSample(i, s, dir) => {
+                if let Some(kit) = &mut self.kit
+                    && kit.move_sample(i, s, dir)
+                {
+                    let selection = self.selection;
+                    self.selection = match selection {
+                        Selection::Sample(si, ss) => {
+                            Selection::Sample(si, adjusted_index(ss, s, dir))
+                        }
+                        other => other,
+                    };
+                    if let Some((pi, ps)) = self.previewing {
+                        self.previewing = Some((pi, adjusted_index(ps, s, dir)));
+                    }
                 }
             }
             Message::InstrumentNormalized(i, checked) => {
@@ -1117,6 +1156,23 @@ fn toolbar_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> 
         .on_press(message)
         .style(theme::pill(false))
         .into()
+}
+
+/// The new index of the item formerly at `index` after the item at `moved`
+/// swaps with its neighbor in `dir`. Only meaningful when the move happened
+/// (callers check the model's return value first).
+fn adjusted_index(index: usize, moved: usize, dir: Move) -> usize {
+    let target = match dir {
+        Move::Up => moved - 1,
+        Move::Down => moved + 1,
+    };
+    if index == moved {
+        target
+    } else if index == target {
+        moved
+    } else {
+        index
+    }
 }
 
 /// Relays "playback finished" tokens from the audio thread into iced messages.

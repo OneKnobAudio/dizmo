@@ -2,4 +2,4 @@ pub mod load;
 pub mod save;
 pub mod types;
 
-pub use types::{EditorInstrument, EditorKit, PowerScale};
+pub use types::{EditorInstrument, EditorKit, Move, PowerScale};
