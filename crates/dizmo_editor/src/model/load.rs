@@ -2,9 +2,39 @@
 
 use std::path::{Path, PathBuf};
 
-use dizmo_kit::{DizmoKit, KitError, MidiMap};
+use dizmo_kit::{DizmoKit, Instrument, KitError, MidiMap};
 
-use crate::model::{EditorInstrument, EditorKit};
+use crate::model::{EditorInstrument, EditorKit, PowerScale};
+
+/// Rescales a v2 instrument's sample powers into the editor's 0..1 range and
+/// returns the original range so `save` can map values back. Powers are left
+/// untouched (and `None` returned) for v1 instruments — they use `<velocity>`
+/// groups — and when the range is zero or has no finite values (no inverse).
+pub(crate) fn rescale_powers(instrument: &mut Instrument) -> Option<PowerScale> {
+    if !instrument.is_v2() || instrument.samples.is_empty() {
+        return None;
+    }
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for sample in &instrument.samples {
+        if sample.power.is_finite() {
+            min = min.min(sample.power);
+            max = max.max(sample.power);
+        }
+    }
+    if min >= max {
+        // Zero span (all powers equal) or no finite powers: there is no
+        // inverse transform, so the values are kept as they are.
+        return None;
+    }
+    let span = f64::from(max) - f64::from(min);
+    for sample in &mut instrument.samples {
+        if sample.power.is_finite() {
+            sample.power = ((f64::from(sample.power) - f64::from(min)) / span) as f32;
+        }
+    }
+    Some(PowerScale { min, max })
+}
 
 /// Loads a kit from its `drumkit.xml` file into the editable model.
 ///
@@ -24,10 +54,15 @@ pub fn load(file_path: &Path) -> Result<(EditorKit, Option<String>), KitError> {
         .instrument_refs
         .iter()
         .zip(&kit.instruments)
-        .map(|(reference, instrument)| EditorInstrument {
-            file: PathBuf::from(&reference.file),
-            reference: reference.clone(),
-            instrument: instrument.clone(),
+        .map(|(reference, instrument)| {
+            let mut instrument = instrument.clone();
+            let power_scale = rescale_powers(&mut instrument);
+            EditorInstrument {
+                file: PathBuf::from(&reference.file),
+                reference: reference.clone(),
+                instrument,
+                power_scale,
+            }
         })
         .collect::<Vec<_>>();
 

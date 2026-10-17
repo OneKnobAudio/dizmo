@@ -33,14 +33,39 @@ pub struct EditorKit {
     pub warnings: Vec<String>,
 }
 
+/// The original power range of a v2 instrument's samples as read from the kit
+/// file (DrumGizmo powers are unbounded, e.g. DRSKit runs 0.037 → 37.9). The
+/// editor rescales powers into 0..1 for display and editing, and maps values
+/// back into this range on save. `None` means the powers are already in the
+/// editor's 0..1 scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PowerScale {
+    pub min: f32,
+    pub max: f32,
+}
+
+impl PowerScale {
+    /// Maps a stored 0..1 power back into the kit file's scale. The math runs
+    /// in `f64` and is stored as `f32` to keep the round trip as exact as the
+    /// format allows.
+    pub fn to_file(self, normalized: f32) -> f32 {
+        (f64::from(self.min) + f64::from(normalized) * f64::from(self.max - self.min)) as f32
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EditorInstrument {
     /// Path of the instrument XML file, relative to `drumkit.xml`.
     pub file: PathBuf,
     /// The drumkit.xml-side reference (channel map, chokes, group).
     pub reference: InstrumentRef,
-    /// The instrument-side data (channels, samples).
+    /// The instrument-side data (channels, samples). Sample powers are stored
+    /// normalized to 0..1; [`EditorInstrument::power_scale`] remembers the
+    /// file's original range for saving.
     pub instrument: Instrument,
+    /// The kit file's original power range, restored on save. Editor-only,
+    /// never serialized; recomputed from the saved values on every load.
+    pub power_scale: Option<PowerScale>,
 }
 
 impl EditorKit {
@@ -108,6 +133,7 @@ impl EditorKit {
             file,
             reference,
             instrument,
+            power_scale: None,
         });
         self.dirty = true;
         id
